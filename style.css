@@ -5,3 +5,14 @@ button.reset {
 button.compact_button {
     min-width: min(100px,100%);
 }
+
+#sml_loras_dropdown .wrap-inner {
+    max-height: 8rem;
+    overflow-y: auto;
+    align-content: flex-start;
+}
+
+#sml_loras_dropdown input::placeholder {
+    color: var(--body-text-color-subdued);
+    opacity: 0.72;
+}

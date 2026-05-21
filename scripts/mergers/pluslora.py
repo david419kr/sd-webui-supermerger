@@ -267,6 +267,58 @@ def parse_lora_ratio_spec(parts, preset_dict, family):
     print("ERROR:Number of Blocks must be 12,17,20,26")
     return [base] * 26
 
+def strip_lora_choice_label(name):
+    if isinstance(name, str) and "[" in name:
+        return name[:name.find("[")]
+    return name
+
+def normalize_lora_selection(names):
+    if names is None:
+        return []
+    if isinstance(names, str):
+        names = [names]
+    out = []
+    for name in names:
+        if name not in out:
+            out.append(name)
+    return out
+
+def lora_choice_for_name(name):
+    if name in selectable:
+        return name
+    base_name = strip_lora_choice_label(name)
+    for choice in selectable:
+        if strip_lora_choice_label(choice) == base_name:
+            return choice
+    return None
+
+def valid_lora_selection(names):
+    out = []
+    for name in normalize_lora_selection(names):
+        choice = lora_choice_for_name(name)
+        if choice is not None and choice not in out:
+            out.append(choice)
+    return out
+
+def lora_choices_selected_first(names):
+    selected = valid_lora_selection(names)
+    selected_set = set(selected)
+    return selected + [name for name in selectable if name not in selected_set]
+
+def lora_selection_to_text(names, ratio):
+    clean_names = [strip_lora_choice_label(name) for name in normalize_lora_selection(names)]
+    if not clean_names:
+        return ""
+    return f":{ratio},".join(clean_names)+f":{ratio} "
+
+def lora_dropdown_update(names):
+    selected = valid_lora_selection(names)
+    return gr.update(choices=lora_choices_selected_first(selected), value=selected)
+
+def lora_dropdown_update_and_text(names, ratio):
+    selected = valid_lora_selection(names)
+    return gr.update(choices=lora_choices_selected_first(selected), value=selected), lora_selection_to_text(selected, ratio)
+
 def load_lora_header_or_state(filename):
     return load_state_header(filename, torch.float)
 
@@ -594,8 +646,9 @@ def on_ui_tabs():
                     beta = gr.Slider(label="beta", minimum=-1.0, maximum=2, step=0.001, value=1)
                     smooth = gr.Slider(label="gamma(smooth)", minimum=-1, maximum=20, step=0.1, value=1)
         
-        sml_dim = gr.Radio(label = "remake dimension",choices = ["no","auto",4,8,16,32,64,128,256,512,768,1024],value = "no",type = "value") 
+        sml_dim = gr.Radio(label = "remake dimension",choices = ["no","auto",4,8,16,32,64,128,256,512,768,1024],value = "no",type = "value")
         sml_loranames = gr.Textbox(label='LoRAname1:ratio1:Blocks1,LoRAname2:ratio2:Blocks2,...(":blocks" is option, not necessary)',lines=1,value="",visible =True)
+        sml_loras = gr.Dropdown(label = "LoRAs on disk",choices = selectable,value=[],type="value",multiselect=True,filterable=True,interactive=True,visible = True,elem_id="sml_loras_dropdown")
         sml_loratypes = gr.CheckboxGroup(show_label=False, choices= ["LoRA", "LoCon", "Others"], value=["LoRA", "LoCon", "Others"])
         sml_dims = gr.CheckboxGroup(label = "1.X/2.X",choices=[],value = [],type="value",interactive=True,visible = False)
         sml_dims_xl = gr.CheckboxGroup(label = "XL",choices=[],value = [],type="value",interactive=True,visible = False)
@@ -612,15 +665,11 @@ def on_ui_tabs():
             sml_deselectall = gr.Button(elem_id="slm_deselectall", value="deselect all",variant='primary')
             components.frompromptb = gr.Button(elem_id="slm_deselectall", value="get from prompt",variant='primary')
             hidenb = gr.Checkbox(value = False,visible = False)
-        sml_loras = gr.CheckboxGroup(label = "LoRAs on disk",choices = selectable,type="value",interactive=True,visible = True)
-        sml_loraratios = gr.TextArea(label="",value=sml_lbwpresets,visible =True,interactive  = True)  
-
-        sml_selectall.click(fn = lambda x:gr.update(value = selectable),outputs = [sml_loras])
-        sml_deselectall.click(fn = lambda x:gr.update(value =[]),outputs = [sml_loras])
+        sml_loraratios = gr.TextArea(label="",value=sml_lbwpresets,visible =True,interactive  = True)
 
         with gr.Row():
             changediffusers = gr.Button(elem_id=f"change_diffusers_version", value=f"change diffusers version(now:{d_ver})",variant='primary')
-            dversion = gr.Textbox(label="diffusers version",lines=1,visible =True,interactive  = True)  
+            dversion = gr.Textbox(label="diffusers version",lines=1,visible =True,interactive  = True)
         components.sml_loranames = [sml_loras, sml_loranames, hidenb]
 
         changediffusers.click(
@@ -666,7 +715,7 @@ def on_ui_tabs():
                 out.append(f"{name}[{','.join(add)}]" if add != ["","",""] else f"{name}")
             return out
 
-        def updateloras():
+        def updateloras(current_selection, ratio):
             lora.list_available_loras()
             names = []
             for n in  lora.available_loras.items():
@@ -678,9 +727,9 @@ def on_ui_tabs():
 
             global selectable
             selectable = toselect(ldict)
-            return gr.update(choices = selectable)
+            return lora_dropdown_update_and_text(current_selection, ratio)
 
-        sml_update.click(fn = updateloras,outputs = [sml_loras])
+        sml_update.click(fn = updateloras,inputs=[sml_loras,sml_lratio],outputs = [sml_loras,sml_loranames])
 
         def makedimlist(ver):
             outs = []
@@ -696,7 +745,7 @@ def on_ui_tabs():
             outs = sorted(set(outs))
             return outs + outs_list
 
-        def calculatedim(calcsets, device):
+        def calculatedim(calcsets, device, current_selection, ratio):
             # CSVから読み込む
             if "Load from CSV" in calcsets:
                 with open(dimpath, mode='r', encoding='utf-8') as csv_file:
@@ -727,7 +776,9 @@ def on_ui_tabs():
 
             global selectable
             selectable = toselect(ldict)
-            return (gr.update(choices=selectable, value=[]),
+            dropdown_update, loranames_update = lora_dropdown_update_and_text(current_selection, ratio)
+            return (dropdown_update,
+                    loranames_update,
                     gr.update(visible=True, choices=makedimlist("1.X/2.X")),
                     gr.update(visible=True, choices=makedimlist("XL")),
                     gr.update(visible=True, choices=makedimlist("Flux")),
@@ -736,12 +787,13 @@ def on_ui_tabs():
 
         sml_calcdim.click(
             fn=calculatedim,
-            inputs=[sml_calcsets, device],
-            outputs=[sml_loras,sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima]
+            inputs=[sml_calcsets, device, sml_loras, sml_lratio],
+            outputs=[sml_loras,sml_loranames,sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima]
         )
 
-        def dimselector(dims, dims_xl, dims_flux, dims_anima, ltypes):
+        def dimselector(dims, dims_xl, dims_flux, dims_anima, ltypes, current_selection, ratio):
             rl={}
+            ltypes = list(ltypes or [])
             if "Others" in ltypes:ltypes += ["LyCORIS", "unknown"]
             for name, vals in ldict.items():
                 dim, ltype, sdver = vals
@@ -757,23 +809,29 @@ def on_ui_tabs():
             global selectable
             selectable = toselect(rl)
 
-            return gr.update(choices = selectable, value =[])
+            return lora_dropdown_update_and_text(current_selection, ratio)
+
+        def select_all_loras(ratio):
+            names = list(selectable)
+            return gr.update(choices=names, value=names), lora_selection_to_text(names, ratio)
+
+        def deselect_all_loras():
+            return gr.update(choices=selectable, value=[]), ""
 
         def llister(names,ratio, hiden):
           if hiden:return gr.update()
-          if names ==[] : return ""
-          else:
-            for i,n in enumerate(names):
-              if "[" in n:names[i] = n[:n.find("[")]
-            return f":{ratio},".join(names)+f":{ratio} "
+          return lora_selection_to_text(names, ratio)
 
+        sml_selectall.click(fn = select_all_loras,inputs=[sml_lratio],outputs = [sml_loras,sml_loranames])
+        sml_deselectall.click(fn = deselect_all_loras,outputs = [sml_loras,sml_loranames])
         hidenb.change(fn=lambda x: False, outputs = [hidenb])
         sml_loras.change(fn=llister,inputs=[sml_loras,sml_lratio, hidenb],outputs=[sml_loranames])
-        sml_dims.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
-        sml_dims_xl.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
-        sml_dims_flux.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
-        sml_dims_anima.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
-        sml_loratypes.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
+        sml_loras.blur(fn=lora_dropdown_update,inputs=[sml_loras],outputs=[sml_loras])
+        sml_dims.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes,sml_loras,sml_lratio],outputs=[sml_loras,sml_loranames])
+        sml_dims_xl.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes,sml_loras,sml_lratio],outputs=[sml_loras,sml_loranames])
+        sml_dims_flux.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes,sml_loras,sml_lratio],outputs=[sml_loras,sml_loranames])
+        sml_dims_anima.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes,sml_loras,sml_lratio],outputs=[sml_loras,sml_loranames])
+        sml_loratypes.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes,sml_loras,sml_lratio],outputs=[sml_loras,sml_loranames])
 
 ##############################################################
 ####### make LoRA from checkpoint
@@ -2081,11 +2139,12 @@ def frompromptf(*args):
     for name, multi, lbw in zip(names, multis, lbws):
         nml = [name,str(multi),lbw] if lbw is not None else [name,str(multi)]
         outst.append(":".join(nml))
-        if name in selectable:
-            outss.append(name)
+        choice = lora_choice_for_name(name)
+        if choice is not None:
+            outss.append(choice)
     global pchanged
     pchanged = True
-    return outss,",".join(outst), True
+    return lora_dropdown_update(outss),",".join(outst), True
 
 def loradealer(prompts,lratios,elementals):
     _, extra_network_data = extra_networks.parse_prompts([prompts])
