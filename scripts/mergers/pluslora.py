@@ -17,6 +17,7 @@ import scripts.mergers.components as components
 import torch
 from modules import extra_networks, scripts, sd_models, launch_utils
 from modules.ui import create_refresh_button
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from scripts.kohyas import extract_lora_from_models as ext
 from scripts.mergers.model_util import filenamecutter, savemodel
@@ -40,11 +41,13 @@ BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08"
 BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
 BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
 BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
-BLOCKNUMS = [12,17,20,26,61]
+ANIMA_BLOCKID = ["BASE", "IN"] + [f"B{x:02}" for x in range(28)] + [f"L{x:02}" for x in range(6)] + ["LLM", "OUT"]
+ANIMA_BLOCKNUM = len(ANIMA_BLOCKID)
+BLOCKNUMS = [12,17,20,26,61,ANIMA_BLOCKNUM]
 BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26]
 
 def to26(ratios):
-    if len(ratios) == 26 or len(ratios) > 40 : return ratios
+    if len(ratios) == 26 or len(ratios) == ANIMA_BLOCKNUM or len(ratios) > 40 : return ratios
     ids = BLOCKIDS[BLOCKNUMS.index(len(ratios))]
     output = [0]*26
     for i, id in enumerate(ids):
@@ -59,6 +62,410 @@ def to61s(ratioss):
         else:
             out.append(ratios + [ratios[0]] * (61 - len(ratios)))
     return out
+
+ANIMA_CHECKPOINT_PREFIXES = ("net.", "model.diffusion_model.", "diffusion_model.")
+ANIMA_LORA_PREFIXES = ("diffusion_model.", "text_encoders.qwen3_06b.")
+ANIMA_LORA_SUFFIXES = (".lora_down.weight", ".lora_up.weight", ".alpha", ".diff")
+
+def anima_normalize_checkpoint_key(key):
+    for prefix in ANIMA_CHECKPOINT_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):], prefix
+    return key, ""
+
+def anima_is_canonical_checkpoint_keys(keys):
+    keyset = set()
+    for key in keys:
+        normalized, _ = anima_normalize_checkpoint_key(key)
+        keyset.add(normalized)
+    return (
+        "blocks.0.mlp.layer1.weight" in keyset
+        and "llm_adapter.blocks.0.cross_attn.q_proj.weight" in keyset
+        and "x_embedder.proj.1.weight" in keyset
+    )
+
+def anima_is_checkpoint_state_dict(sd):
+    return anima_is_canonical_checkpoint_keys(sd.keys())
+
+def anima_lora_module_name(key):
+    for suffix in ANIMA_LORA_SUFFIXES:
+        if key.endswith(suffix):
+            return key[:-len(suffix)]
+    return None
+
+def anima_is_lora_module(module):
+    if module is None:
+        return False
+    for prefix in ANIMA_LORA_PREFIXES:
+        if module.startswith(prefix):
+            body = module[len(prefix):]
+            return body.startswith(("blocks.", "llm_adapter.", "x_embedder.", "t_embedder.", "t_embedding_norm", "final_layer."))
+    return False
+
+def anima_is_lora_state_dict(sd):
+    for key in sd.keys():
+        module = anima_lora_module_name(key)
+        if anima_is_lora_module(module):
+            return True
+    return False
+
+def anima_lora_family_from_state_dict(sd):
+    return "Anima" if anima_is_lora_state_dict(sd) else None
+
+def anima_checkpoint_key_from_lora_module(module):
+    if module.startswith("diffusion_model."):
+        body = module[len("diffusion_model."):]
+    elif module.startswith("text_encoders.qwen3_06b."):
+        body = module[len("text_encoders.qwen3_06b."):]
+    else:
+        body = module
+    if not body.endswith(".weight"):
+        body += ".weight"
+    return body
+
+def anima_lora_module_from_checkpoint_key(key):
+    body, _ = anima_normalize_checkpoint_key(key)
+    if not body.endswith(".weight"):
+        return None
+    return "diffusion_model." + body[:-len(".weight")]
+
+def anima_checkpoint_key_map(sd):
+    out = {}
+    for key in sd.keys():
+        normalized, _ = anima_normalize_checkpoint_key(key)
+        out[normalized] = key
+    return out
+
+def anima_block_id_from_checkpoint_key(key):
+    body, _ = anima_normalize_checkpoint_key(key)
+    if body.startswith(("x_embedder.", "t_embedder.", "t_embedding_norm")):
+        return "IN"
+    m = re.match(r"blocks\.(\d+)\.", body)
+    if m:
+        return f"B{int(m.group(1)):02}"
+    m = re.match(r"llm_adapter\.blocks\.(\d+)\.", body)
+    if m:
+        return f"L{int(m.group(1)):02}"
+    if body.startswith(("llm_adapter.embed", "llm_adapter.norm", "llm_adapter.out_proj")):
+        return "LLM"
+    if body.startswith("final_layer."):
+        return "OUT"
+    return "BASE"
+
+def anima_block_index_from_lora_module(module):
+    target_key = anima_checkpoint_key_from_lora_module(module)
+    block = anima_block_id_from_checkpoint_key(target_key)
+    return ANIMA_BLOCKID.index(block) if block in ANIMA_BLOCKID else 0
+
+def split_lora_name_spec(loranames):
+    temp = []
+    for n in loranames.split(","):
+        if ":" in n:
+            temp.append(n.split(":"))
+        elif temp:
+            temp[-1].append(n)
+    return temp
+
+def parse_lora_ratio_presets(loraratios):
+    ldict = {}
+    for l in loraratios.splitlines():
+        if ":" not in l:
+            continue
+        count = l.count(",")
+        if not any(count == x - 1 for x in BLOCKNUMS):
+            continue
+        ldict[l.split(":", 1)[0].strip()] = l.split(":", 1)[1]
+    return ldict
+
+def parse_lora_ratio_spec(parts, preset_dict, family):
+    try:
+        base = float(parts[1])
+    except Exception:
+        raise ValueError(f"Invalid LoRA ratio: {':'.join(parts)}")
+
+    if family == "Anima":
+        if len(parts) == 2:
+            return [base] * ANIMA_BLOCKNUM
+        if len(parts) == 3 and parts[2].strip() in preset_dict:
+            values = [float(r) * base for r in preset_dict[parts[2].strip()].split(",")]
+        elif len(parts[2:]) == ANIMA_BLOCKNUM:
+            values = [float(x) for x in parts[2:]]
+        else:
+            raise ValueError(f"Anima LoRA block weights must be {ANIMA_BLOCKNUM} values: {':'.join(parts)}")
+        if len(values) != ANIMA_BLOCKNUM:
+            raise ValueError(f"Anima LoRA block weights must be {ANIMA_BLOCKNUM} values, got {len(values)}")
+        return values
+
+    if len(parts) == 2:
+        return [base] * 26
+    if len(parts) == 3:
+        if parts[2].strip() in preset_dict:
+            ratio = [float(r) * base for r in preset_dict[parts[2].strip()].split(",")]
+            return to26(ratio)
+        return [base] * 26
+    if len(parts[2:]) in BLOCKNUMS:
+        ratio = [float(x) for x in parts[2:]]
+        return to26(ratio)
+    print("ERROR:Number of Blocks must be 12,17,20,26")
+    return [base] * 26
+
+def load_lora_header_or_state(filename):
+    return load_state_header(filename, torch.float)
+
+def load_anima_checkpoint_state_dict(path, device="cpu"):
+    if os.path.splitext(path)[1] == ".safetensors":
+        return load_file(path, device=device)
+    return torch.load(path, map_location=device)
+
+def checkpoint_file_is_anima(path):
+    if os.path.splitext(path)[1] == ".safetensors":
+        with safe_open(path, framework="pt", device="cpu") as f:
+            return anima_is_canonical_checkpoint_keys(f.keys())
+    return anima_is_checkpoint_state_dict(load_anima_checkpoint_state_dict(path, device="cpu"))
+
+def tensor_shape(value):
+    if isinstance(value, torch.Tensor):
+        return tuple(value.shape)
+    if isinstance(value, dict):
+        return tuple(value.get("shape", []))
+    return ()
+
+def tensor_rank(value):
+    shape = tensor_shape(value)
+    return shape[0] if len(shape) > 0 else None
+
+def anima_lora_modules(sd):
+    modules = set()
+    for key in sd.keys():
+        if key.endswith(".lora_down.weight") or key.endswith(".diff"):
+            module = anima_lora_module_name(key)
+            if anima_is_lora_module(module):
+                modules.add(module)
+    return modules
+
+def anima_lora_module_rank(sd, module):
+    value = sd.get(module + ".lora_down.weight", None)
+    return tensor_rank(value)
+
+def anima_lora_module_diff(sd, module, device, calc_dtype):
+    diff_key = module + ".diff"
+    if diff_key in sd:
+        return sd[diff_key].to(device=device, dtype=calc_dtype)
+
+    down_key = module + ".lora_down.weight"
+    up_key = module + ".lora_up.weight"
+    if down_key not in sd or up_key not in sd:
+        return None
+
+    down_weight = sd[down_key].to(device=device, dtype=calc_dtype)
+    up_weight = sd[up_key].to(device=device, dtype=calc_dtype)
+    dim = down_weight.size(0)
+    alpha = sd.get(module + ".alpha", torch.tensor(dim))
+    if isinstance(alpha, torch.Tensor):
+        alpha = float(alpha.detach().cpu().item())
+    scale = alpha / dim if dim else 0.0
+
+    if len(down_weight.shape) == 2:
+        return (up_weight @ down_weight) * scale
+    if len(down_weight.shape) == 4:
+        return torch.nn.functional.conv2d(
+            down_weight.permute(1, 0, 2, 3), up_weight
+        ).permute(1, 0, 2, 3) * scale
+    return None
+
+def anima_svd_to_lora(out_sd, module, mat, rank, device):
+    mat = mat.to(device=device, dtype=torch.float32)
+    if len(mat.shape) == 1:
+        out_sd[module + ".diff"] = mat.to("cpu").contiguous()
+        return "diff"
+    if len(mat.shape) != 2:
+        return None
+
+    out_dim, in_dim = mat.shape
+    rank = min(int(rank), int(in_dim), int(out_dim))
+    if rank <= 0:
+        return None
+
+    U, S, Vh = torch.linalg.svd(mat, full_matrices=False)
+    U = U[:, :rank]
+    S = S[:rank]
+    U = U @ torch.diag(S)
+    Vh = Vh[:rank, :]
+
+    dist = torch.cat([U.flatten(), Vh.flatten()])
+    hi_val = torch.quantile(dist, CLAMP_QUANTILE)
+    low_val = -hi_val
+    U = U.clamp(low_val, hi_val)
+    Vh = Vh.clamp(low_val, hi_val)
+
+    out_sd[module + ".lora_up.weight"] = U.to("cpu").contiguous()
+    out_sd[module + ".lora_down.weight"] = Vh.to("cpu").contiguous()
+    out_sd[module + ".alpha"] = torch.tensor(float(rank))
+    return "lora"
+
+def anima_base_metadata(name, dim, save_precision, extra=None):
+    metadata = {
+        "ss_base_model_version": "anima",
+        "ss_network_module": "networks.lora",
+        "ss_network_dim": str(dim),
+        "ss_network_alpha": str(dim),
+        "ss_mixed_precision": save_precision,
+        "ss_output_name": name,
+        "ss_supermerger_anima_lora": "1",
+    }
+    if extra:
+        metadata.update({k: str(v) for k, v in extra.items()})
+    return metadata
+
+def make_anima_lora_from_checkpoints(model_a, model_b, dim, saveto, alpha, beta, save_precision, device):
+    path_a = fullpathfromname(model_a)
+    path_b = fullpathfromname(model_b)
+    sd_a = load_anima_checkpoint_state_dict(path_a, device="cpu")
+    sd_b = load_anima_checkpoint_state_dict(path_b, device="cpu")
+
+    if not anima_is_checkpoint_state_dict(sd_a) or not anima_is_checkpoint_state_dict(sd_b):
+        return None
+
+    map_a = anima_checkpoint_key_map(sd_a)
+    map_b = anima_checkpoint_key_map(sd_b)
+    common = sorted(k for k in map_a.keys() if k in map_b and k.endswith(".weight") and sd_a[map_a[k]].shape == sd_b[map_b[k]].shape)
+
+    calc_device = CUDA if "cuda" in str(device) and torch.cuda.is_available() else CPU
+    out_sd = {}
+    lora_count = 0
+    diff_count = 0
+    rank = 128 if type(dim) != int else int(dim)
+
+    for key in tqdm(common, desc="Anima LoRA SVD"):
+        module = anima_lora_module_from_checkpoint_key(key)
+        if module is None:
+            continue
+        a = sd_a[map_a[key]]
+        b = sd_b[map_b[key]]
+        if len(a.shape) not in (1, 2):
+            continue
+        mat = (float(alpha) * a.to(device=calc_device, dtype=torch.float32)) - (float(beta) * b.to(device=calc_device, dtype=torch.float32))
+        kind = anima_svd_to_lora(out_sd, module, mat, rank, calc_device)
+        if kind == "lora":
+            lora_count += 1
+        elif kind == "diff":
+            diff_count += 1
+        del mat
+
+    if lora_count + diff_count == 0:
+        return "ERROR: No Anima LoRA eligible tensors were found"
+
+    metadata = anima_base_metadata(
+        os.path.splitext(os.path.basename(saveto))[0],
+        rank,
+        save_precision,
+        {"sshs_recipe": f"{alpha} * {model_a} - {beta} * {model_b}", "sshs_lora_count": lora_count, "sshs_diff_count": diff_count},
+    )
+    save_to_file(saveto, out_sd, out_sd, str_to_dtype(save_precision), metadata)
+    return f"Anima LoRA weights are saved to: {saveto} ({lora_count} LoRA tensors, {diff_count} diff tensors)"
+
+def merge_anima_lora_models(models, ratios, new_rank, save_precision, calc_precision, device, extract=False, alpha=1, beta=1, smooth=1):
+    calc_device = CUDA if "cuda" in str(device) and torch.cuda.is_available() else CPU
+    calc_dtype = str_to_dtype(calc_precision) or torch.float32
+    if calc_device == CPU:
+        calc_dtype = torch.float32
+    lora_sds = []
+    ranks = []
+
+    for model in models:
+        sd, _, _ = load_state_dict(model, calc_dtype, "cpu")
+        if not anima_is_lora_state_dict(sd):
+            raise ValueError(f"Non-Anima LoRA cannot be mixed with Anima LoRA: {model}")
+        lora_sds.append(sd)
+        ranks += [r for module in anima_lora_modules(sd) for r in [anima_lora_module_rank(sd, module)] if r]
+
+    modules = sorted(set().union(*[anima_lora_modules(sd) for sd in lora_sds]))
+    if not modules:
+        raise ValueError("No Anima LoRA modules were found")
+
+    if isinstance(new_rank, int) and new_rank > 0:
+        rank = new_rank
+    elif ranks:
+        rank = max(ranks)
+    else:
+        rank = 128
+
+    out_sd = {}
+    for module in tqdm(modules, desc="Anima LoRA merge"):
+        merged = None
+        if extract:
+            if len(lora_sds) < 2:
+                raise ValueError("Extract from two LoRAs requires at least two LoRAs")
+            mat_a = anima_lora_module_diff(lora_sds[0], module, calc_device, calc_dtype)
+            mat_b = anima_lora_module_diff(lora_sds[1], module, calc_device, calc_dtype)
+            if mat_a is None and mat_b is None:
+                continue
+            if mat_a is None:
+                mat_a = torch.zeros_like(mat_b)
+            if mat_b is None:
+                mat_b = torch.zeros_like(mat_a)
+            if mat_a.shape != mat_b.shape:
+                raise ValueError(f"Anima LoRA shape mismatch: {module} {tuple(mat_a.shape)} != {tuple(mat_b.shape)}")
+            block_index = anima_block_index_from_lora_module(module)
+            mat_a = mat_a * ratios[0][block_index]
+            mat_b = mat_b * ratios[1][block_index]
+            merged = extract_super(None, mat_a, mat_b, alpha, beta, smooth)
+        else:
+            for sd, ratio in zip(lora_sds, ratios):
+                mat = anima_lora_module_diff(sd, module, calc_device, calc_dtype)
+                if mat is None:
+                    continue
+                block_ratio = ratio[anima_block_index_from_lora_module(module)]
+                if merged is None:
+                    merged = mat * block_ratio
+                else:
+                    if merged.shape != mat.shape:
+                        raise ValueError(f"Anima LoRA shape mismatch: {module} {tuple(merged.shape)} != {tuple(mat.shape)}")
+                    merged += mat * block_ratio
+        if merged is None:
+            continue
+        anima_svd_to_lora(out_sd, module, merged, rank, calc_device)
+        del merged
+
+    if not out_sd:
+        raise ValueError("No Anima LoRA tensors were merged")
+    return out_sd
+
+def pluslora_anima(theta_0, filenames, ratios, calc_precision, device):
+    calc_device = CUDA if "cuda" in str(device) and torch.cuda.is_available() else CPU
+    calc_dtype = str_to_dtype(calc_precision) or torch.float32
+    if calc_device == CPU:
+        calc_dtype = torch.float32
+    key_map = anima_checkpoint_key_map(theta_0)
+    applied = 0
+
+    for filename, ratio in zip(filenames, ratios):
+        lora_sd, _, _ = load_state_dict(filename, calc_dtype, "cpu")
+        if not anima_is_lora_state_dict(lora_sd):
+            raise ValueError(f"Non-Anima LoRA cannot be baked into an Anima checkpoint: {filename}")
+        for module in tqdm(sorted(anima_lora_modules(lora_sd)), desc=f"Anima bake {os.path.basename(filename)}"):
+            target_key = anima_checkpoint_key_from_lora_module(module)
+            if target_key not in key_map:
+                continue
+            mat = anima_lora_module_diff(lora_sd, module, calc_device, calc_dtype)
+            if mat is None:
+                continue
+            block_ratio = ratio[anima_block_index_from_lora_module(module)]
+            if block_ratio == 0:
+                continue
+            actual_key = key_map[target_key]
+            weight = theta_0[actual_key]
+            if tuple(weight.shape) != tuple(mat.shape):
+                raise ValueError(f"Anima checkpoint shape mismatch: {actual_key} {tuple(weight.shape)} != {tuple(mat.shape)}")
+            merged = weight.to(device=calc_device, dtype=calc_dtype) + mat * block_ratio
+            theta_0[actual_key] = merged.to(device="cpu", dtype=weight.dtype).contiguous()
+            applied += 1
+            del mat, merged
+
+    if applied == 0:
+        raise ValueError("No Anima LoRA tensors were applied to the checkpoint")
+    print(f"SuperMerger: baked {applied} Anima LoRA tensors into checkpoint.")
+    return theta_0
 
 def f_changediffusers(version):
     launch.run_pip(f"install diffusers=={version}", f"diffusers ver {version}")
@@ -133,6 +540,7 @@ def on_ui_tabs():
         sml_dims = gr.CheckboxGroup(label = "1.X/2.X",choices=[],value = [],type="value",interactive=True,visible = False)
         sml_dims_xl = gr.CheckboxGroup(label = "XL",choices=[],value = [],type="value",interactive=True,visible = False)
         sml_dims_flux = gr.CheckboxGroup(label = "Flux",choices=[],value = [],type="value",interactive=True,visible = False)
+        sml_dims_anima = gr.CheckboxGroup(label = "Anima",choices=[],value = [],type="value",interactive=True,visible = False)
         with gr.Row(equal_height=False):
             sml_calcdim = gr.Button(elem_id="calcloras", value="Calculate LoRA dimensions",variant='primary')
             sml_calcsets = gr.CheckboxGroup(choices=["Save as CSV","Load from CSV"],show_label=False)
@@ -259,19 +667,20 @@ def on_ui_tabs():
 
             global selectable
             selectable = toselect(ldict)
-            return (gr.update(choices=selectable, value=[]), 
+            return (gr.update(choices=selectable, value=[]),
                     gr.update(visible=True, choices=makedimlist("1.X/2.X")),
                     gr.update(visible=True, choices=makedimlist("XL")),
-                    gr.update(visible=True, choices=makedimlist("Flux"))
+                    gr.update(visible=True, choices=makedimlist("Flux")),
+                    gr.update(visible=True, choices=makedimlist("Anima"))
             )
 
         sml_calcdim.click(
             fn=calculatedim,
             inputs=[sml_calcsets, device],
-            outputs=[sml_loras,sml_dims,sml_dims_xl,sml_dims_flux]
+            outputs=[sml_loras,sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima]
         )
 
-        def dimselector(dims, dims_xl, dims_flux, ltypes):
+        def dimselector(dims, dims_xl, dims_flux, dims_anima, ltypes):
             rl={}
             if "Others" in ltypes:ltypes += ["LyCORIS", "unknown"]
             for name, vals in ldict.items():
@@ -281,6 +690,8 @@ def on_ui_tabs():
                 if sdver == "XL" and dim in dims_xl and ltype in ltypes:
                     rl[name] = vals
                 if sdver == "Flux" and dim in dims_flux and ltype in ltypes:
+                    rl[name] = vals
+                if sdver == "Anima" and dim in dims_anima and ltype in ltypes:
                     rl[name] = vals
 
             global selectable
@@ -297,11 +708,12 @@ def on_ui_tabs():
             return f":{ratio},".join(names)+f":{ratio} "
 
         hidenb.change(fn=lambda x: False, outputs = [hidenb])
-        sml_loras.change(fn=llister,inputs=[sml_loras,sml_lratio, hidenb],outputs=[sml_loranames])     
-        sml_dims.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_loratypes],outputs=[sml_loras])  
-        sml_dims_xl.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_loratypes],outputs=[sml_loras]) 
-        sml_dims_flux.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_loratypes],outputs=[sml_loras]) 
-        sml_loratypes.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_loratypes],outputs=[sml_loras]) 
+        sml_loras.change(fn=llister,inputs=[sml_loras,sml_lratio, hidenb],outputs=[sml_loranames])
+        sml_dims.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
+        sml_dims_xl.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
+        sml_dims_flux.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
+        sml_dims_anima.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
+        sml_loratypes.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras])
 
 ##############################################################
 ####### make LoRA from checkpoint
@@ -318,6 +730,25 @@ def makelora(model_a,model_b,dim,saveto,settings,alpha,beta,save_precision,calc_
         currentinfo = None
 
     lowvramdealer() #web-uiのバグ対策
+
+    if saveto =="" : saveto = makeloraname(model_a,model_b)
+    if not ".safetensors" in saveto :saveto  += ".safetensors"
+    saveto = os.path.join(shared.cmd_opts.lora_dir,saveto)
+
+    dim = 128 if type(dim) != int else int(dim)
+    if os.path.isfile(saveto ) and not "overwrite" in settings:
+        _err_msg = f"Output file ({saveto}) existed and was not saved"
+        print(_err_msg)
+        return _err_msg
+
+    model_a_path = fullpathfromname(model_a)
+    model_b_path = fullpathfromname(model_b)
+    a_is_anima = checkpoint_file_is_anima(model_a_path)
+    b_is_anima = checkpoint_file_is_anima(model_b_path)
+    if a_is_anima or b_is_anima:
+        if not (a_is_anima and b_is_anima):
+            return "ERROR: Anima and non-Anima checkpoints cannot be mixed for LoRA extraction"
+        return make_anima_lora_from_checkpoints(model_a, model_b, dim, saveto, alpha, beta, save_precision, device)
 
     checkpoint_info = sd_models.get_closet_checkpoint_match(model_a)
     load_model(checkpoint_info)
@@ -337,16 +768,6 @@ def makelora(model_a,model_b,dim,saveto,settings,alpha,beta,save_precision,calc_
         unload_forge()
     else:
         sd_models.unload_model_weights()
-
-    if saveto =="" : saveto = makeloraname(model_a,model_b)
-    if not ".safetensors" in saveto :saveto  += ".safetensors"
-    saveto = os.path.join(shared.cmd_opts.lora_dir,saveto)
-
-    dim = 128 if type(dim) != int else int(dim)
-    if os.path.isfile(saveto ) and not "overwrite" in settings:
-        _err_msg = f"Output file ({saveto}) existed and was not saved"
-        print(_err_msg)
-        return _err_msg
 
     args = Kohya_extract_args(
         v2=is_sd2,
@@ -376,6 +797,60 @@ def makelora(model_a,model_b,dim,saveto,settings,alpha,beta,save_precision,calc_
 def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,alpha,beta,smooth,merge,device):
     try:
         import lora
+        parsed_names = split_lora_name_spec(loranames)
+        if not parsed_names:
+            return "ERROR: No LoRA Selected"
+
+        alias_map = getattr(lora, "available_lora_aliases", {})
+        selected = []
+        for n in parsed_names:
+            c_lora = lora.available_loras.get(n[0], alias_map.get(n[0], None))
+            if c_lora is None:
+                lora.list_available_loras()
+                c_lora = lora.available_loras.get(n[0], alias_map.get(n[0], None))
+            if c_lora is None:
+                return f"ERROR: LoRA not found: {n[0]}"
+            header = load_lora_header_or_state(c_lora.filename)
+            selected.append((n, c_lora, anima_lora_family_from_state_dict(header)))
+
+        if any(family == "Anima" for _, _, family in selected):
+            if not all(family == "Anima" for _, _, family in selected):
+                return "ERROR: Anima LoRA and non-Anima LoRA cannot be mixed"
+
+            preset_dict = parse_lora_ratio_presets(loraratioss)
+            ln, lr, lm = [], [], []
+            for n, c_lora, _ in selected:
+                ratio = parse_lora_ratio_spec(n, preset_dict, "Anima")
+                ln.append(c_lora.filename)
+                lr.append(ratio)
+                lm.append(prepare_merge_metadata(n[1], ",".join([str(x) for x in ratio]), c_lora))
+
+            if filename =="":filename =loranames.replace(",","+").replace(":","_")
+            if not ".safetensors" in filename:filename += ".safetensors"
+            loraname = filename.replace(".safetensors", "")
+            filename = os.path.join(shared.cmd_opts.lora_dir,filename)
+            if os.path.isfile(filename) and not "overwrite" in settings:
+                _err_msg = f"Output file ({filename}) existed and was not saved"
+                print(_err_msg)
+                return _err_msg
+
+            new_rank = int(dim) if dim != "no" and dim != "auto" else 0
+            if merge:
+                sd = merge_anima_lora_models(ln, lr, new_rank, save_precision, calc_precision, device)
+            else:
+                if len(ln) < 2:
+                    return "ERROR: Extract from two LoRAs requires at least two LoRAs"
+                sd = merge_anima_lora_models(ln[:2], lr[:2], new_rank, save_precision, calc_precision, device, extract=True, alpha=alpha, beta=beta, smooth=smooth)
+
+            metadata = create_merge_metadata(sd, lm, loraname, save_precision, metasets)
+            metadata["ss_base_model_version"] = "anima"
+            metadata["ss_supermerger_anima_lora"] = "1"
+            save_to_file(filename, sd, sd, str_to_dtype(save_precision), metadata)
+            del sd
+            gc.collect()
+            torch.cuda.empty_cache()
+            return "saved : "+filename
+
         loras_on_disk = [lora.available_loras.get(name, None) for name in loranames]
         if any([x is None for x in loras_on_disk]):
             lora.list_available_loras()
@@ -790,7 +1265,12 @@ def pluslora(lnames,loraratios,settings,output,model,save_precision,calc_precisi
         filenames.append(c_lora.filename)
         lweis.append(ratio)
 
-    modeln=filenamecutter(model,True)   
+    lora_families = []
+    for filename in filenames:
+        header = load_lora_header_or_state(filename)
+        lora_families.append(anima_lora_family_from_state_dict(header))
+
+    modeln=filenamecutter(model,True)
     dname = modeln
     for n in names:
       dname = dname + "+"+n
@@ -808,6 +1288,36 @@ def pluslora(lnames,loraratios,settings,output,model,save_precision,calc_precisi
         print(f"Changing dtype of {model} from {dtype} to float16")
         qkeys = list(theta_0.keys())
         q_dequantize(theta_0,dtype,device,torch.float16,False)
+
+    base_is_anima = anima_is_checkpoint_state_dict(theta_0)
+    if base_is_anima or any(family == "Anima" for family in lora_families):
+        if not base_is_anima:
+            return "ERROR: Anima LoRA can only be baked into an Anima checkpoint"
+        if not all(family == "Anima" for family in lora_families):
+            return "ERROR: Non-Anima LoRA cannot be baked into an Anima checkpoint"
+        try:
+            lweis = [parse_lora_ratio_spec(n, ldict, "Anima") for n in lnames]
+            theta_0 = pluslora_anima(theta_0,filenames,lweis,calc_precision,device)
+        except Exception as e:
+            traceback.print_exc()
+            return f"ERROR: {e}"
+
+        settings.append(save_precision)
+        settings.append("safetensors")
+        result = savemodel(theta_0,dname,output,settings)
+
+        lora.loaded_loras.clear()
+        if hasattr(sd_models, "checkpoints_loaded"):
+            sd_models.checkpoints_loaded.clear()
+        if forge:
+            from modules.sd_models import FakeInitialModel
+            sd_models.unload_model_weights()
+            sd_models.checkpoint_info = FakeInitialModel()
+            load_model(revert_target, reload=True)
+
+        del theta_0
+        gc.collect()
+        return result + add
 
     isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in theta_0.keys()
     isv2 = "cond_stage_model.model.transformer.resblocks.0.attn.out_proj.weight" in theta_0.keys()
@@ -1193,6 +1703,13 @@ def dimgetter(filename, device = "cpu"):
     alpha = None
     dim = None
     ltype = None
+
+    if anima_is_lora_state_dict(lora_sd):
+        for key, value in lora_sd.items():
+            if key.endswith(".lora_down.weight"):
+                dim = tensor_rank(value)
+                break
+        return dim if dim else "unknown", "LoRA", "Anima"
 
     if "lora_unet_down_blocks_0_resnets_0_conv1.lora_down.weight" in lora_sd.keys():
       ltype = "LoCon"

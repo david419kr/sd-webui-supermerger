@@ -24,9 +24,14 @@ def prune_model(model, isxl=False):
             model.pop(k, None)
     return model
 
+ANIMA_KEY_PREFIXES = ("net.", "blocks.", "llm_adapter.", "x_embedder.", "t_embedder.", "t_embedding_norm", "final_layer.")
+
+def is_anima_checkpoint_key(key):
+    return key.startswith(ANIMA_KEY_PREFIXES)
+
 def to_half(sd):
     for key in sd.keys():
-        if ('model' in key or key.startswith("net.")) and sd[key].dtype in {torch.float32, torch.float64, torch.bfloat16}:
+        if ('model' in key or is_anima_checkpoint_key(key)) and sd[key].dtype in {torch.float32, torch.float64, torch.bfloat16}:
             sd[key] = sd[key].half()
     return sd
 
@@ -122,7 +127,7 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
 
     print("Saving...")
     isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in state_dict
-    isanima = any(key.startswith("net.") for key in state_dict)
+    isanima = any(is_anima_checkpoint_key(key) for key in state_dict)
     if isxl:
         # prune share memory tensors, "cond_stage_model." prefixed base tensors are share memory with "conditioner." prefixed tensors
         for key in list(state_dict.keys()):
@@ -134,7 +139,7 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
     if "prune" in savesets:
         if isanima:
             for key in list(state_dict.keys()):
-                if not key.startswith("net."):
+                if not is_anima_checkpoint_key(key):
                     state_dict.pop(key, None)
         else:
             state_dict = prune_model(state_dict, isxl)
