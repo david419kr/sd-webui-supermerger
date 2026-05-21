@@ -144,20 +144,20 @@ def on_ui_tabs():
 
                     with gr.Accordion("Merging Block Weights", open=False):
                         with gr.Row():
-                            isxl = gr.Radio(label = "Block Type",choices = ["1.X or 2.X", "XL"], value = "1.X or 2.X", type="index")
+                            isxl = gr.Radio(label = "Block Type",choices = ["1.X or 2.X", "XL", "Anima"], value = 0, type="index")
 
                         with gr.Tab("Weights Setting"):
                             with gr.Group(), gr.Tabs():
                                 with gr.Tab("Weights for alpha"):
                                     with gr.Row(variant="compact"):
-                                        weights_a = gr.Textbox(label="BASE,IN00,IN02,...IN11,M00,OUT00,...,OUT11",value = "0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5", show_copy_button=True)
+                                        weights_a = gr.Textbox(label=",".join(BLOCKID[:-1]),value = default_weight_text(BLOCKID[:-1], 0.5), show_copy_button=True)
                                     with gr.Row():
                                         setalpha = gr.Button(elem_id="copytogen", value="↑ Set alpha",variant='primary', scale=3)
                                         readalpha = gr.Button(elem_id="copytogen", value="↓ Read alpha",variant='primary', scale=3)
                                         setx = gr.Button(elem_id="copytogen", value="↑ Set X", min_width="80px", scale=1)
                                 with gr.Tab("beta"):
                                     with gr.Row(variant="compact"):
-                                        weights_b = gr.Textbox(label="BASE,IN00,IN02,...IN11,M00,OUT00,...,OUT11",value = "0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2", show_copy_button=True)
+                                        weights_b = gr.Textbox(label=",".join(BLOCKID[:-1]),value = default_weight_text(BLOCKID[:-1], 0.2), show_copy_button=True)
                                     with gr.Row():
                                         setbeta = gr.Button(elem_id="copytogen", value="↑ Set beta",variant='primary', scale=3)
                                         readbeta = gr.Button(elem_id="copytogen", value="↓ Read beta",variant='primary', scale=3)
@@ -190,47 +190,69 @@ def on_ui_tabs():
                                             lower = gr.Slider(label="Slider Lower Limit", minimum=-2, maximum=3, step=0.1, value=0)
                                             upper = gr.Slider(label="Slider Upper Limit", minimum=-2, maximum=3, step=0.1, value=1)
 
-                            with gr.Row():
-                                with gr.Column(scale=1, min_width=100):
-                                    gr.Slider(visible=False)
-                                with gr.Column(scale=2, min_width=200):
-                                    base = gr.Slider(label="Base", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                with gr.Column(scale=1, min_width=100):
-                                    gr.Slider(visible=False)
-                            with gr.Row():
-                                with gr.Column(scale=2, min_width=200):
-                                    in00 = gr.Slider(label="IN00", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in01 = gr.Slider(label="IN01", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in02 = gr.Slider(label="IN02", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in03 = gr.Slider(label="IN03", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in04 = gr.Slider(label="IN04", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in05 = gr.Slider(label="IN05", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in06 = gr.Slider(label="IN06", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in07 = gr.Slider(label="IN07", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in08 = gr.Slider(label="IN08", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in09 = gr.Slider(label="IN09", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in10 = gr.Slider(label="IN10", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    in11 = gr.Slider(label="IN11", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                with gr.Column(scale=2, min_width=200):
-                                    ou11 = gr.Slider(label="OUT11", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou10 = gr.Slider(label="OUT10", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou09 = gr.Slider(label="OUT09", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou08 = gr.Slider(label="OUT08", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou07 = gr.Slider(label="OUT07", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou06 = gr.Slider(label="OUT06", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou05 = gr.Slider(label="OUT05", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou04 = gr.Slider(label="OUT04", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou03 = gr.Slider(label="OUT03", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou02 = gr.Slider(label="OUT02", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou01 = gr.Slider(label="OUT01", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                    ou00 = gr.Slider(label="OUT00", minimum=0, maximum=1, step=0.0001, value=0.5)
-                            with gr.Row():
-                                with gr.Column(scale=1, min_width=100):
-                                    gr.Slider(visible=False)
-                                with gr.Column(scale=2, min_width=200):
-                                    mi00 = gr.Slider(label="M00", minimum=0, maximum=1, step=0.0001, value=0.5)
-                                with gr.Column(scale=1, min_width=100):
-                                    gr.Slider(visible=False)
+                            with gr.Group(visible=True) as sd_mbw_group:
+                                with gr.Row():
+                                    with gr.Column(scale=1, min_width=100):
+                                        gr.Slider(visible=False)
+                                    with gr.Column(scale=2, min_width=200):
+                                        base = gr.Slider(label="Base", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                    with gr.Column(scale=1, min_width=100):
+                                        gr.Slider(visible=False)
+                                with gr.Row():
+                                    with gr.Column(scale=2, min_width=200):
+                                        in00 = gr.Slider(label="IN00", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in01 = gr.Slider(label="IN01", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in02 = gr.Slider(label="IN02", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in03 = gr.Slider(label="IN03", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in04 = gr.Slider(label="IN04", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in05 = gr.Slider(label="IN05", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in06 = gr.Slider(label="IN06", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in07 = gr.Slider(label="IN07", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in08 = gr.Slider(label="IN08", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in09 = gr.Slider(label="IN09", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in10 = gr.Slider(label="IN10", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        in11 = gr.Slider(label="IN11", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                    with gr.Column(scale=2, min_width=200):
+                                        ou11 = gr.Slider(label="OUT11", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou10 = gr.Slider(label="OUT10", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou09 = gr.Slider(label="OUT09", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou08 = gr.Slider(label="OUT08", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou07 = gr.Slider(label="OUT07", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou06 = gr.Slider(label="OUT06", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou05 = gr.Slider(label="OUT05", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou04 = gr.Slider(label="OUT04", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou03 = gr.Slider(label="OUT03", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou02 = gr.Slider(label="OUT02", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou01 = gr.Slider(label="OUT01", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                        ou00 = gr.Slider(label="OUT00", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                with gr.Row():
+                                    with gr.Column(scale=1, min_width=100):
+                                        gr.Slider(visible=False)
+                                    with gr.Column(scale=2, min_width=200):
+                                        mi00 = gr.Slider(label="M00", minimum=0, maximum=1, step=0.0001, value=0.5)
+                                    with gr.Column(scale=1, min_width=100):
+                                        gr.Slider(visible=False)
+
+                            anima_menbers = []
+                            with gr.Group(visible=False) as anima_mbw_group:
+                                with gr.Row():
+                                    for block_id in ANIMA_BLOCKID[:2]:
+                                        with gr.Column(scale=1, min_width=160):
+                                            anima_menbers.append(gr.Slider(label=block_id, minimum=0, maximum=1, step=0.0001, value=0.5))
+                                for start in range(2, 30, 4):
+                                    with gr.Row():
+                                        for block_id in ANIMA_BLOCKID[start:start + 4]:
+                                            with gr.Column(scale=1, min_width=120):
+                                                anima_menbers.append(gr.Slider(label=block_id, minimum=0, maximum=1, step=0.0001, value=0.5))
+                                for start in range(30, 36, 3):
+                                    with gr.Row():
+                                        for block_id in ANIMA_BLOCKID[start:start + 3]:
+                                            with gr.Column(scale=1, min_width=120):
+                                                anima_menbers.append(gr.Slider(label=block_id, minimum=0, maximum=1, step=0.0001, value=0.5))
+                                with gr.Row():
+                                    for block_id in ANIMA_BLOCKID[36:38]:
+                                        with gr.Column(scale=1, min_width=160):
+                                            anima_menbers.append(gr.Slider(label=block_id, minimum=0, maximum=1, step=0.0001, value=0.5))
 
                         with gr.Tab("Weights Presets"):
                             with gr.Row():
@@ -671,7 +693,8 @@ def on_ui_tabs():
         blockids.change(fn=lambda x:" ".join(x),inputs=[blockids],outputs=[inputer])
         calcmodes.change(fn=lambda x:",".join(x),inputs=[calcmodes],outputs=[inputer])
 
-        menbers = [base,in00,in01,in02,in03,in04,in05,in06,in07,in08,in09,in10,in11,mi00,ou00,ou01,ou02,ou03,ou04,ou05,ou06,ou07,ou08,ou09,ou10,ou11]
+        sd_menbers = [base,in00,in01,in02,in03,in04,in05,in06,in07,in08,in09,in10,in11,mi00,ou00,ou01,ou02,ou03,ou04,ou05,ou06,ou07,ou08,ou09,ou10,ou11]
+        menbers = sd_menbers + anima_menbers
         menbers_plus = menbers + [resetval]
 
         lower.change(fn = lambda x: [gr.update(minimum = x) for i in range(len(menbers_plus))],inputs = [lower],outputs = menbers_plus)
@@ -696,99 +719,68 @@ def on_ui_tabs():
             msg = savemodel(None,None,custom_name,save_settings)
             return gr.update(value=msg)
 
-        def addblockweights(val, blockopt, *blocks):
+        def is_selected_block(block_id, blockopt, block_type):
+            blockopt = blockopt or []
+            if "BASE" in blockopt and block_id == "BASE":
+                return True
+
+            if is_anima_block_type(block_type):
+                return (
+                    ("IN" in blockopt and block_id == "IN")
+                    or ("B*" in blockopt and block_id.startswith("B"))
+                    or ("L*" in blockopt and re.fullmatch(r"L\d+", block_id) is not None)
+                    or ("LLM" in blockopt and block_id == "LLM")
+                    or ("OUT" in blockopt and block_id == "OUT")
+                )
+
+            if is_xl_block_type(block_type) and block_id not in BLOCKIDXLL[:-1]:
+                return False
+
+            return (
+                ("INP*" in blockopt and block_id.startswith("IN"))
+                or ("MID" in blockopt and block_id.startswith("M"))
+                or ("OUT*" in blockopt and block_id.startswith("OUT"))
+            )
+
+        def update_block_sliders(vals, blockopt, block_type, op):
+            if is_anima_block_type(block_type):
+                sd_updates = [gr.update() for _ in range(len(BLOCKID) - 1)]
+                anima_updates = [
+                    gr.update(value=op(vals[i])) if is_selected_block(block_id, blockopt, block_type) else gr.update()
+                    for i, block_id in enumerate(ANIMA_BLOCKID)
+                ]
+                return sd_updates + anima_updates
+
+            sd_updates = [
+                gr.update(value=op(vals[i])) if is_selected_block(block_id, blockopt, block_type) else gr.update()
+                for i, block_id in enumerate(BLOCKID[:-1])
+            ]
+            anima_updates = [gr.update() for _ in ANIMA_BLOCKID]
+            return sd_updates + anima_updates
+
+        def addblockweights(val, blockopt, block_type, *blocks):
             if val == "none":
                 val = 0
 
             value = float(val)
+            offset = len(BLOCKID) - 1
+            vals = list(blocks[offset:offset + len(ANIMA_BLOCKID)]) if is_anima_block_type(block_type) else list(blocks[:offset])
+            return update_block_sliders(vals, blockopt, block_type, lambda x: x + value)
 
-            if "BASE" in blockopt:
-                vals = [blocks[0] + value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] + value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] + value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] + value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def mulblockweights(val, blockopt, *blocks):
+        def mulblockweights(val, blockopt, block_type, *blocks):
             if val == "none":
                 val = 0
 
             value = float(val)
+            offset = len(BLOCKID) - 1
+            vals = list(blocks[offset:offset + len(ANIMA_BLOCKID)]) if is_anima_block_type(block_type) else list(blocks[:offset])
+            return update_block_sliders(vals, blockopt, block_type, lambda x: x * value)
 
-            if "BASE" in blockopt:
-                vals = [blocks[0] * value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] * value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] * value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] * value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def resetblockweights(val, blockopt):
+        def resetblockweights(val, blockopt, block_type):
             if val == "none":
                 val = 0
-            vals = [float(val)] * 26
-            return setblockweights(vals, blockopt)
-
-        def setblockweights(vals, blockopt):
-            if "BASE" in blockopt:
-                ret = [gr.update(value = vals[0])]
-            else:
-                ret = [gr.update()]
-
-            if "INP*" in blockopt:
-                inp = [gr.update(value = vals[i + 1]) for i in range(12)]
-            else:
-                inp = [gr.update() for _ in range(12)]
-            ret = ret + inp
-
-            if "MID" in blockopt:
-                mid = [gr.update(value = vals[13])]
-            else:
-                mid = [gr.update()]
-            ret = ret + mid
-
-            if "OUT*" in blockopt:
-                out = [gr.update(value = vals[i + 14]) for i in range(12)]
-            else:
-                out = [gr.update() for _ in range(12)]
-            ret = ret + out
-
-            return ret
+            vals = [float(val)] * (len(ANIMA_BLOCKID) if is_anima_block_type(block_type) else len(BLOCKID) - 1)
+            return update_block_sliders(vals, blockopt, block_type, lambda x: x)
 
         def resetvalopt(opt):
             if opt == "none":
@@ -833,14 +825,14 @@ def on_ui_tabs():
         savecurrent.click(fn=save_current_merge, inputs=[custom_name, save_sets], outputs=[components.submit_result])
 
         resetopt.change(fn=resetvalopt,inputs=[resetopt],outputs=[resetval])
-        resetweight.click(fn=resetblockweights,inputs=[resetval,resetblockopt],outputs=menbers)
-        addweight.click(fn=addblockweights,inputs=[resetval,resetblockopt,*menbers],outputs=menbers)
-        mulweight.click(fn=mulblockweights,inputs=[resetval,resetblockopt,*menbers],outputs=menbers)
+        resetweight.click(fn=resetblockweights,inputs=[resetval,resetblockopt,isxl],outputs=menbers)
+        addweight.click(fn=addblockweights,inputs=[resetval,resetblockopt,isxl,*menbers],outputs=menbers)
+        mulweight.click(fn=mulblockweights,inputs=[resetval,resetblockopt,isxl,*menbers],outputs=menbers)
 
         readalpha.click(fn=text2slider,inputs=[weights_a,isxl],outputs=menbers)
         readbeta.click(fn=text2slider,inputs=[weights_b,isxl],outputs=menbers)
 
-        dd_preset_weight.change(fn=on_change_dd_preset_weight,inputs=[wpresets, dd_preset_weight],outputs=menbers)
+        dd_preset_weight.change(fn=on_change_dd_preset_weight,inputs=[wpresets, dd_preset_weight,isxl],outputs=menbers)
         dd_preset_weight_r.change(fn=on_change_dd_preset_weight_r,inputs=[wpresets, dd_preset_weight_r,luckab],outputs=[weights_a,weights_b])
 
         def refresh_presets(presets,rand,ab = ""):
@@ -850,15 +842,42 @@ def on_ui_tabs():
         preset_refresh.click(fn=refresh_presets,inputs=[wpresets,components.dfalse],outputs=[dd_preset_weight])
         preset_refresh_r.click(fn=refresh_presets,inputs=[wpresets,components.dtrue],outputs=[weights_a,weights_b])
 
-        def changexl(isxl):
-            out = [True] * 26
-            if isxl:
-                for i,id in enumerate(BLOCKID[:-1]):
-                    if id not in BLOCKIDXLL[:-1]:
-                        out[i] = False
-            return [gr.update(visible = x) for x in out]
+        def change_block_type(block_type, weights_alpha_text, weights_beta_text):
+            block_ids = ui_block_ids(block_type)
+            block_label = ",".join(block_ids)
+            alpha_update = gr.update(label=block_label)
+            beta_update = gr.update(label=block_label)
+            sd_slider_visibility = [True] * (len(BLOCKID) - 1)
 
-        isxl.change(fn=changexl,inputs=[isxl], outputs=menbers)
+            if count_weight_values(weights_alpha_text) != len(block_ids):
+                alpha_update = gr.update(label=block_label, value=default_weight_text(block_ids, 0.5))
+            if count_weight_values(weights_beta_text) != len(block_ids):
+                beta_update = gr.update(label=block_label, value=default_weight_text(block_ids, 0.2))
+
+            if is_anima_block_type(block_type):
+                sd_slider_visibility = [False] * (len(BLOCKID) - 1)
+                return [
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(choices=["BASE","IN","B*","L*","LLM","OUT"], value=["B*","L*"]),
+                    alpha_update,
+                    beta_update,
+                    *[gr.update(visible=x) for x in sd_slider_visibility],
+                ]
+
+            if is_xl_block_type(block_type):
+                sd_slider_visibility = [block_id in BLOCKIDXLL[:-1] for block_id in BLOCKID[:-1]]
+
+            return [
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(choices=["BASE","INP*","MID","OUT*"], value=["INP*","OUT*"]),
+                alpha_update,
+                beta_update,
+                *[gr.update(visible=x) for x in sd_slider_visibility],
+            ]
+
+        isxl.change(fn=change_block_type,inputs=[isxl, weights_a, weights_b], outputs=[sd_mbw_group, anima_mbw_group, resetblockopt, weights_a, weights_b, *sd_menbers])
 
         x_type.change(fn=showxy,inputs=[x_type,y_type,z_type], outputs=[row_blockids,row_checkpoints,row_inputers,ygrid,zgrid,row_blocks,row_calcmode])
         y_type.change(fn=showxy,inputs=[x_type,y_type,z_type], outputs=[row_blockids,row_checkpoints,row_inputers,ygrid,zgrid,row_blocks,row_calcmode])
@@ -1121,41 +1140,99 @@ def get_xyzpreset_keylist():
     keys_list = list(get_xyzpreset_data())
     return sorted(keys_list)
 
-def text2slider(text, isxl=False):
+def normalize_block_type(block_type):
+    if block_type in ("Anima", "1.X or 2.X", "XL"):
+        return block_type
+    if block_type == 0:
+        return "1.X or 2.X"
+    if block_type == 1:
+        return "XL"
+    if block_type == 2:
+        return "Anima"
+    if block_type is True:
+        return "XL"
+    return "1.X or 2.X"
+
+def is_anima_block_type(block_type):
+    return normalize_block_type(block_type) == "Anima"
+
+def is_xl_block_type(block_type):
+    return normalize_block_type(block_type) == "XL"
+
+def ui_block_ids(block_type):
+    block_type = normalize_block_type(block_type)
+    if block_type == "Anima":
+        return ANIMA_BLOCKID
+    if block_type == "XL":
+        return BLOCKIDXLL[:-1]
+    return BLOCKID[:-1]
+
+def default_weight_text(block_ids, value):
+    return ",".join([str(value)] * len(block_ids))
+
+def count_weight_values(text):
+    return len([t for t in str(text).split(",") if t.strip() != ""])
+
+def parse_weight_values(text):
+    vals = [t.strip() for t in text.split(",") if t.strip() != ""]
+    return [0 if v in RANCHA else float(v) for v in vals]
+
+def text2slider(text, block_type=False):
     vals = [t.strip() for t in text.split(",")]
     vals = [0 if v in "RUX" else v for v in vals]
+    sd_updates = [gr.update() for _ in range(len(BLOCKID) - 1)]
+    anima_updates = [gr.update() for _ in ANIMA_BLOCKID]
 
-    if isxl:
+    if is_anima_block_type(block_type):
+        for i, v in enumerate(vals[:len(ANIMA_BLOCKID)]):
+            anima_updates[i] = gr.update(value = float(v))
+        return sd_updates + anima_updates
+
+    if is_xl_block_type(block_type):
         j = 0
         ret = []
         for i, v in enumerate(ISXLBLOCK):
             if v:
-                ret.append(gr.update(value = float(vals[j])))
-                j += 1
+                if j < len(vals):
+                    ret.append(gr.update(value = float(vals[j])))
+                    j += 1
+                else:
+                    ret.append(gr.update())
             else:
                 ret.append(gr.update())
-        return ret
+        return ret + anima_updates
 
-    return [gr.update(value = float(v)) for v in vals]
+    for i, v in enumerate(vals[:len(BLOCKID) - 1]):
+        sd_updates[i] = gr.update(value = float(v))
+    return sd_updates + anima_updates
 
-def slider2text(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,presets, preset, isxl):
-    az = find_preset_by_name(presets, preset)
+def slider2text(*args):
+    sd_count = len(BLOCKID) - 1
+    anima_count = len(ANIMA_BLOCKID)
+    sd_numbers = list(args[:sd_count])
+    anima_numbers = list(args[sd_count:sd_count + anima_count])
+    presets, preset, block_type = args[sd_count + anima_count:]
+    az = find_preset_by_name(presets, preset, block_type)
     if az is not None:
         if any(element in az for element in RANCHA):return az
-    numbers = [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z]
-    if isxl:
+    if is_anima_block_type(block_type):
+        numbers = anima_numbers
+    elif is_xl_block_type(block_type):
         newnums = []
         for i,id in enumerate(BLOCKID[:-1]):
             if id in BLOCKIDXLL[:-1]:
-                newnums.append(numbers[i])
+                newnums.append(sd_numbers[i])
         numbers = newnums
+    else:
+        numbers = sd_numbers
     numbers = [str(x) for x in numbers]
     return gr.update(value = ",".join(numbers) )
 
-def on_change_dd_preset_weight(presets, preset):
-    weights = find_preset_by_name(presets, preset)
+def on_change_dd_preset_weight(presets, preset, block_type):
+    weights = find_preset_by_name(presets, preset, block_type)
     if weights is not None:
-        return text2slider(weights)
+        return text2slider(weights, block_type)
+    return [gr.update() for _ in range((len(BLOCKID) - 1) + len(ANIMA_BLOCKID))]
 
 def on_change_dd_preset_weight_r(presets, preset, ab):
     weights = find_preset_by_name(presets, preset)
@@ -1178,7 +1255,7 @@ def tagdicter(presets, rand = False):
         if "\t" in l:
             key = l.split("\t",1)[0]
             w = l.split("\t",1)[1]
-        if len([w for w in w.split(",")]) == 26:
+        if len([w for w in w.split(",")]) in SUPPORTED_MBW_COUNTS:
             if rand and not any(element in w for element in RANCHA) : continue
             wdict[key.strip()]=w
     return ",".join(list(wdict.keys()))
@@ -1186,7 +1263,7 @@ def tagdicter(presets, rand = False):
 def preset_name_list(presets, rand = False):
     return tagdicter(presets, rand).split(",")
 
-def find_preset_by_name(presets, preset):
+def find_preset_by_name(presets, preset, block_type=None):
     presets = presets.splitlines()
     for l in presets:
         if ":" in l:
@@ -1197,7 +1274,9 @@ def find_preset_by_name(presets, preset):
             w = l.split("\t",1)[1]
         else:
             continue
-        if key == preset and len([w for w in w.split(",")]) == 26:
+        weight_count = len([w for w in w.split(",")])
+        expected_count = len(ui_block_ids(block_type)) if block_type is not None else None
+        if key == preset and weight_count in SUPPORTED_MBW_COUNTS and (expected_count is None or weight_count == expected_count):
             return w
 
     return None
@@ -1207,7 +1286,9 @@ BLOCKIDXL=['BASE', 'IN0', 'IN1', 'IN2', 'IN3', 'IN4', 'IN5', 'IN6', 'IN7', 'IN8'
 BLOCKIDXLL=['BASE', 'IN00', 'IN01', 'IN02', 'IN03', 'IN04', 'IN05', 'IN06', 'IN07', 'IN08', 'M00', 'OUT00', 'OUT01', 'OUT02', 'OUT03', 'OUT04', 'OUT05', 'OUT06', 'OUT07', 'OUT08', 'VAE']
 BLOCKIDXLLL = ["CLIPL","CLIPG","IN0","IN00","IN10","IN20","IN30","IN40","IN41","IN410","IN411","IN50","IN51", "IN510","IN511","IN60","IN70","IN71","IN710","IN711","IN712","IN713","IN714", "IN715","IN716","IN717","IN718","IN719","IN80","IN81","IN810","IN811","IN812","IN813","IN814", "IN815","IN816","IN817","IN818","IN819","MID00","MID10","MID100","MID101","MID102","MID103", "MID104","MID105","MID106","MID107","MID108","MID109","MID20","OUT00","OUT01","OUT010","OUT011", "OUT012","OUT013","OUT014","OUT015","OUT016","OUT017","OUT018","OUT019","OUT10", "OUT11","OUT110","OUT111","OUT112","OUT113","OUT114","OUT115","OUT116","OUT117","OUT118","OUT119", "OUT20","OUT21","OUT210","OUT211","OUT212","OUT213","OUT214","OUT215","OUT216", "OUT217","OUT218","OUT219","OUT22","OUT30","OUT31","OUT310","OUT311","OUT40","OUT41","OUT410", "OUT411","OUT50","OUT51","OUT510","OUT511","OUT52","OUT60","OUT70","OUT80","OUT9", "TIME","LABEL", "VAE"]
 ISXLBLOCK=[True,  True,  True,  True,  True,  True,  True,  True,  True,  True, False, False, False, True,   True,   True,   True,   True,   True,   True,   True,   True,   True,  False,  False,  False]
-BLOCKIDS = [BLOCKID,BLOCKIDXL,BLOCKIDXLL,BLOCKIDXLLL]
+ANIMA_BLOCKID = ["BASE", "IN"] + [f"B{x:02}" for x in range(28)] + [f"L{x:02}" for x in range(6)] + ["LLM", "OUT"]
+SUPPORTED_MBW_COUNTS = {len(BLOCKID) - 1, len(BLOCKIDXLL) - 1, len(ANIMA_BLOCKID)}
+BLOCKIDS = [BLOCKID,BLOCKIDXL,BLOCKIDXLL,BLOCKIDXLLL,ANIMA_BLOCKID]
 
 def modeltype(sd):
     if "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in sd.keys():
@@ -1247,11 +1328,15 @@ def loadmodel(model):
     else:
         return load_torch_file(checkpoint_info.filename)
 
-ADDRAND = "\n\
-ALL_R	R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R\n\
-ALL_U	U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U\n\
-ALL_X	X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X\n\
-"
+ADDRAND = (
+    "\n"
+    + "ALL_R\t" + ",".join(["R"] * (len(BLOCKID) - 1)) + "\n"
+    + "ALL_U\t" + ",".join(["U"] * (len(BLOCKID) - 1)) + "\n"
+    + "ALL_X\t" + ",".join(["X"] * (len(BLOCKID) - 1)) + "\n"
+    + "ALL_R_ANIMA\t" + ",".join(["R"] * len(ANIMA_BLOCKID)) + "\n"
+    + "ALL_U_ANIMA\t" + ",".join(["U"] * len(ANIMA_BLOCKID)) + "\n"
+    + "ALL_X_ANIMA\t" + ",".join(["X"] * len(ANIMA_BLOCKID)) + "\n"
+)
 
 def calccosinedif(model_a,model_b,mode,settings,include,calc):
     inc = " ".join(include)
