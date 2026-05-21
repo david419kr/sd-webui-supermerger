@@ -19,13 +19,16 @@ from modules import extra_networks, scripts, sd_models, launch_utils
 from modules.ui import create_refresh_button
 from safetensors.torch import load_file, save_file
 from scripts.kohyas import extract_lora_from_models as ext
-from scripts.A1111 import networks as nets
 from scripts.mergers.model_util import filenamecutter, savemodel
 from scripts.mergers.mergers import extract_super, unload_forge, q_dequantize, q_quantize, qdtyper, prefixer, BLOCKIDFLUX
 from tqdm import tqdm
 
 _forge_tag = launch_utils.git_tag()
 forge = _forge_tag[0:2] == "f2" or _forge_tag == "neo"
+if forge:
+    nets = None
+else:
+    from scripts.A1111 import networks as nets
 
 selectable = []
 pchanged = False
@@ -941,6 +944,8 @@ def oldpluslora(theta_0,filenames,lweis,names, calc_precision,isxl,isv2, keychan
     return theta_0
 
 def newpluslora(theta_0,filenames,lweis,names, calc_precision,isxl,isv2,isflux, keychanger):
+    if nets is None:
+        raise RuntimeError("SuperMerger checkpoint LoRA merge needs the A1111 networks shim, which is unavailable on this Forge Neo runtime.")
     nets.load_networks(names, [1]* len(names),[1]* len(names), None, isxl, isv2)
 
     for l, loaded in enumerate(nets.loaded_networks):
