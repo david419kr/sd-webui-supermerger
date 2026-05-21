@@ -21,9 +21,13 @@ def prune_model(model, isxl=False):
 
 def to_half(sd):
     for key in sd.keys():
-        if 'model' in key and sd[key].dtype in {torch.float32, torch.float64, torch.bfloat16}:
+        if ('model' in key or key.startswith("net.")) and sd[key].dtype in {torch.float32, torch.float64, torch.bfloat16}:
             sd[key] = sd[key].half()
     return sd
+
+def checkpoint_output_dir():
+    ckpt_dir = getattr(shared.cmd_opts, "ckpt_dir", None)
+    return ckpt_dir if ckpt_dir is not None else sd_models.model_path
 
 def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
     other_dict = {}
@@ -96,7 +100,7 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
     else:
         fname = fname if ext in fname else fname +pre+ext
 
-    fname = os.path.join(shared.cmd_opts.ckpt_dir if shared.cmd_opts.ckpt_dir is not None else sd_models.model_path, fname)
+    fname = os.path.join(checkpoint_output_dir(), fname)
     fname = fname.replace("ProgramFiles_x86_","Program Files (x86)")
 
     if len(fname) > 255:
@@ -111,6 +115,7 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
 
     print("Saving...")
     isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in state_dict
+    isanima = any(key.startswith("net.") for key in state_dict)
     if isxl:
         # prune share memory tensors, "cond_stage_model." prefixed base tensors are share memory with "conditioner." prefixed tensors
         for key in list(state_dict.keys()):
@@ -120,7 +125,12 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
     if "fp16" in savesets:
         state_dict = to_half(state_dict)
     if "prune" in savesets:
-        state_dict = prune_model(state_dict, isxl)
+        if isanima:
+            for key in list(state_dict.keys()):
+                if not key.startswith("net."):
+                    state_dict.pop(key, None)
+        else:
+            state_dict = prune_model(state_dict, isxl)
 
     # for safetensors contiguous error
     print("Check contiguous...")
@@ -138,6 +148,10 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
       print(f"ERROR: Couldn't saved:{fname},ERROR is {e}")
       return f"ERROR: Couldn't saved:{fname},ERROR is {e}"
     print("Done!")
+    try:
+        sd_models.list_models()
+    except Exception as e:
+        print(f"SuperMerger: checkpoint list refresh failed: {e}")
     if other_dict:
         for key in other_dict.keys():
             state_dict[key] = other_dict[key]

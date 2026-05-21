@@ -93,9 +93,11 @@ TYPES = ["none","alpha","beta","alpha and beta","seed", "mbw alpha ","mbw beta",
                 "effective","adjust","pinpoint adjust","calcmode","prompt","prompt2","prompt3","random","merge ID"]
 MODES=["Weight" ,"Add" ,"Triple","Twice"]
 SAVEMODES=["save model", "overwrite"]
+ANIMA_BLOCKID = ["BASE", "IN"] + [f"B{x:02}" for x in range(28)] + [f"L{x:02}" for x in range(6)] + ["LLM", "OUT"]
+ANIMA_WEIGHT_COUNT = len(ANIMA_BLOCKID) - 1
 EXCLUDE_CHOICES = ["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11",
                                   "M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11",
-                                  "Adjust","VAE"]           
+                                  "Adjust","VAE"] + ANIMA_BLOCKID[1:]
 CHCKPOINT_DICT_SKIP_ON_MERGE = ["cond_stage_model.transformer.text_model.embeddings.position_ids"]
 
 #type[0:aplha,1:beta,2:seed,3:mbw,4:model_A,5:model_B,6:model_C]
@@ -108,7 +110,56 @@ NON4 = [None]*4
 
 informer = sd_models.get_closet_checkpoint_match
 
-#msettings=[weights_a,weights_b,model_a,model_b,model_c,device,base_alpha,base_beta,mode,loranames,useblocks,custom_name,save_sets,id_sets,wpresets,deep]  
+def is_anima_state_dict(sd):
+    keys = sd.keys()
+    return (
+        any(key.startswith("net.blocks.") for key in keys)
+        and any(key.startswith("net.llm_adapter.") for key in keys)
+        and any(key.startswith("net.x_embedder.") for key in keys)
+    )
+
+def detect_model_family(sd):
+    if is_anima_state_dict(sd):
+        return "anima"
+    if any("double_block" in key or "single_block" in key for key in sd.keys()):
+        return "flux"
+    if "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in sd.keys():
+        return "sdxl"
+    return "sd"
+
+def is_merge_tensor_key(key):
+    return "weight" in key or "bias" in key
+
+def is_merge_source_key(key, family):
+    if not is_merge_tensor_key(key):
+        return False
+    if family == "anima":
+        return key.startswith("net.")
+    if family == "flux":
+        return True
+    return "model" in key
+
+def is_merge_target_key(key, target_sd, family):
+    if key not in target_sd:
+        return False
+    return is_merge_source_key(key, family)
+
+def has_compatible_merge_shape(key, theta_0, theta_1, theta_2, family):
+    if not (hasattr(theta_0[key], "shape") and hasattr(theta_1[key], "shape")):
+        return False
+    if family == "anima" and theta_0[key].shape != theta_1[key].shape:
+        return False
+    if theta_2 is not None:
+        if key not in theta_2 or not hasattr(theta_2[key], "shape"):
+            return False
+        if family == "anima" and theta_0[key].shape != theta_2[key].shape:
+            return False
+    return True
+
+def is_similarity_target_key(key):
+    return "model" in key or key.startswith("net.")
+
+#msettings=[weights_a,weights_b,model_a,model_b,model_c,device,base_alpha,base_beta,mode,loranames,useblocks,custom_name,save_sets,id_sets,wpresets,deep]
 
 def smergegen(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode,
                        calcmode,useblocks,custom_name,save_sets,id_sets,wpresets,deep,dsettings,tensor,bake_in_vae,opt_value,inex,ex_blocks,ex_elems,
@@ -320,12 +371,14 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         base_alpha  = float(weights_a_t[0])    
         weights_a = [float(w) for w in weights_a_t[1].split(',')]
         caster(f"from {weights_a_t}, alpha = {base_alpha},weights_a ={weights_a}",hearm)
-        if not (len(weights_a) == 25 or len(weights_a) == 19 or len(weights_a) == 60 or len(weights_a) ==109):return f"ERROR: weights alpha value must be 20 or 26 or 61, or 110.",*NON4
+        if len(weights_a) not in (25, 19, 60, 109, ANIMA_WEIGHT_COUNT):
+            return f"ERROR: weights alpha value must be 20, 26, 38, 61, or 110 values including base.",*NON4
         if usebeta:
-            base_beta = float(weights_b_t[0]) 
+            base_beta = float(weights_b_t[0])
             weights_b = [float(w) for w in weights_b_t[1].split(',')]
             caster(f"from {weights_b_t}, beta = {base_beta},weights_a ={weights_b}",hearm)
-            if not(len(weights_b) == 25 or len(weights_b) == 19 or len(weights_a) == 60 or len(weights_a) == 109): return f"ERROR: weights beta value must be 20 or 26 or 61, or 110.",*NON4
+            if len(weights_b) not in (25, 19, 60, 109, ANIMA_WEIGHT_COUNT):
+                return f"ERROR: weights beta value must be 20, 26, 38, 61, or 110 values including base.",*NON4
 
     #model loading start 
     caster("Model loading start",hearm)
@@ -334,9 +387,11 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
     theta_1 = load_model_weights_m(model_b,2,cachetarget,device).copy()
     qdtypes[1] = qdtyper(theta_1)
     prefixer(theta_1)
-    
-    isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in theta_1.keys()
-    isflux = any("double_block" in k for k in theta_1.keys())
+
+    model_family = detect_model_family(theta_1)
+    isxl = model_family == "sdxl"
+    isflux = model_family == "flux"
+    isanima = model_family == "anima"
 
     #adjust
     if fine.rstrip(",0") != "":
@@ -355,21 +410,29 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         if len(weights_a) == 19: weights_a = weights_a + [0]
         if len(weights_b) == 19: weights_b = weights_b + [0]
 
+    if isanima and useblocks:
+        if len(weights_a) != ANIMA_WEIGHT_COUNT or (usebeta and len(weights_b) != ANIMA_WEIGHT_COUNT):
+            return f"ERROR: Anima MBW requires 38 values including base: BASE,{','.join(ANIMA_BLOCKID[1:])}",*NON4
+    elif useblocks and (len(weights_a) == ANIMA_WEIGHT_COUNT or (usebeta and len(weights_b) == ANIMA_WEIGHT_COUNT)):
+        return "ERROR: Anima MBW weights can only be used with Anima checkpoints.",*NON4
+
     if stopmerge: return "STOPPED", *NON4
     if not (MODES[0] in mode): #Add, Twice, Triple
         theta_2 = load_model_weights_m(model_c,3,cachetarget,device).copy()
         prefixer(theta_2)
         qdtypes[2] = qdtyper(theta_2)
-  
+        family_c = detect_model_family(theta_2)
+        if family_c != model_family:
+            return f"ERROR: Model family mismatch: model B is {model_family}, model C is {family_c}",*NON4
+
     if MODES[1] in mode: #Add
         if not(calcmode == "trainDifference" or calcmode == "extract"):
             if isflux and qdtypes[1] != qdtypes[2]:
                 to_qdtype(theta_1, theta_2, qdtypes[1], qdtypes[2], device, "Model B", "Model C")
             for key in tqdm(theta_1, desc="Stage 0/2, Add difference"):
-                if 'model' in key:
+                if is_merge_source_key(key, model_family):
                     if stopmerge: return "STOPPED", *NON4
-                    if not ("weight" in key or "bias" in key): continue
-                    if key in theta_2:
+                    if key in theta_2 and has_compatible_merge_shape(key, theta_1, theta_2, None, model_family):
                         a = list(theta_1[key].shape)
                         b = list(theta_2[key].shape)
                         assert_inpaint(a, b, key)
@@ -396,6 +459,9 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
     qdtypes[0] = qdtyper(theta_0)
     need_revert = prefixer(theta_0)
+    family_a = detect_model_family(theta_0)
+    if family_a != model_family:
+        return f"ERROR: Model family mismatch: model A is {family_a}, model B is {model_family}",*NON4
 
     print(f"Model precisions : {qdtypes}")
 
@@ -417,14 +483,14 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
     keyratio = []
     key_and_alpha = {}
+    merged_key_count = 0
 
     for num, key in enumerate(tqdm(theta_0.keys(), desc="Stage 1/2") if not False else theta_0.keys()):
         if debug:print(key)
         if stopmerge: return "STOPPED", *NON4
-        if (isflux and key not in theta_1) or (not isflux and not ("model" in key and key in theta_1)):continue
-        if not ("weight" in key or "bias" in key): continue
-        if theta_2 is not None and key not in theta_2: continue
-                
+        if not is_merge_target_key(key, theta_1, model_family): continue
+        if not has_compatible_merge_shape(key, theta_0, theta_1, theta_2, model_family): continue
+
         if theta_0[key].device.type != device:theta_0[key] = theta_0[key].to(device)
         if theta_1[key].device.type != device:theta_1[key] = theta_1[key].to(device)
         if theta_2 is not None and theta_2[key].device.type != device:theta_2[key] = theta_2[key].to(device)
@@ -438,11 +504,13 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
         assert_inpaint(a, b, key)
 
-        block,blocks26 = blockfromkey(key,isxl,isflux)
-        
+        block,blocks26 = blockfromkey(key,isxl,isflux,isanima)
+
         #if block == "Not Merge": continue
         skip = inex != "Off" and (ex_blocks or (ex_elems != [""])) and excluder(block,blocks26,inex,ex_blocks,ex_elems,key)
-        if isflux and blocks26 in BLOCKIDFLUX:
+        if isanima and blocks26 in ANIMA_BLOCKID:
+            weight_index = ANIMA_BLOCKID.index(blocks26)
+        elif isflux and blocks26 in BLOCKIDFLUX:
             weight_index = BLOCKIDFLUX.index(blocks26)
         elif isxl and blocks26 in BLOCKIDXLL:
             weight_index = BLOCKIDXLL.index(blocks26)
@@ -450,8 +518,8 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
             weight_index = BLOCKID.index(blocks26)
         else:
             continue
-        
-        weight_index_xl = BLOCKIDXLLL.index(block)
+
+        weight_index_xl = weight_index if (isanima or isflux) else BLOCKIDXLLL.index(block)
 
         if useblocks:
             if weight_index > 0:
@@ -481,9 +549,10 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         if skip:continue
 
         if len(deep) > 0:
-            current_alpha = elementals(key,weight_index,weight_index_xl,deep,randomer,num,lucks,deepprint,current_alpha,len(weights_a) == 109 or "use extended XL" in esettings)
+            current_alpha = elementals(key,weight_index,weight_index_xl,deep,randomer,num,lucks,deepprint,current_alpha,len(weights_a) == 109 or "use extended XL" in esettings,ANIMA_BLOCKID if isanima else None)
 
         keyratio.append([key,current_alpha, current_beta])
+        merged_key_count += 1
         #keyratio.append([key,current_alpha, current_beta,list(theta_0[key].shape),torch.sum(theta_0[key]).item(), torch.mean(theta_0[key]).item(), torch.max(theta_0[key]).item(),  torch.min(theta_0[key]).item()])
         if debug:print(current_alpha,current_beta)
 
@@ -606,7 +675,11 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
             theta_1[key] = theta_1[key].to("cpu")
         except:
             pass
-    
+
+    if isanima and merged_key_count == 0:
+        return "ERROR: Anima merge found 0 mergeable net.* tensors. Nothing was saved.", *NON4
+    print(f"SuperMerger: merged {merged_key_count} tensors for {model_family}.")
+
     if calcmode == "smoothAdd MT":
         # setting threads to higher than 8 doesn't significantly affect the time for merging
         threads = cpu_count()
@@ -620,7 +693,7 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         prefixer(theta_0, True)
 
     for key in tqdm(theta_1.keys(), desc="Stage 2/2"):
-        if key in CHCKPOINT_DICT_SKIP_ON_MERGE or isflux:
+        if key in CHCKPOINT_DICT_SKIP_ON_MERGE or isflux or isanima:
             continue
         if "model" in key and key not in theta_0:
             theta_0.update({key:theta_1[key]})
@@ -672,6 +745,8 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
             "base_beta": base_beta,
             "mode": mode,
             "mbw": useblocks,
+            "model_family": model_family,
+            "merged_tensors": merged_key_count,
             "elemental_merge": deep,
             "calcmode" : calcmode,
             f"{inex}":ex_blocks + ex_elems
@@ -710,7 +785,7 @@ def precosine(calcmode,theta_0,theta_1):
         for key in (tqdm(theta_0.keys(), desc="Stage 0/2")):
             # skip VAE model parameters to get better results
             if "first_stage_model" in key: continue
-            if "model" in key and key in theta_1:
+            if is_similarity_target_key(key) and key in theta_1:
                 theta_0_norm = nn.functional.normalize(theta_0[key].to(torch.float32), p=2, dim=0)
                 theta_1_norm = nn.functional.normalize(theta_1[key].to(torch.float32), p=2, dim=0)
                 simab = sim(theta_0_norm, theta_1_norm)
@@ -725,7 +800,7 @@ def precosine(calcmode,theta_0,theta_1):
         for key in (tqdm(theta_0.keys(), desc="Stage 0/2")):
             # skip VAE model parameters to get better results
             if "first_stage_model" in key: continue
-            if "model" in key and key in theta_1:
+            if is_similarity_target_key(key) and key in theta_1:
                 simab = sim(theta_0[key].to(torch.float32), theta_1[key].to(torch.float32))
                 dot_product = torch.dot(theta_0[key].view(-1).to(torch.float32), theta_1[key].view(-1).to(torch.float32))
                 magnitude_similarity = dot_product / (torch.norm(theta_0[key].to(torch.float32)) * torch.norm(theta_1[key].to(torch.float32)))
@@ -739,7 +814,7 @@ def precosine(calcmode,theta_0,theta_1):
 def cosine(mode,key,sim,sims,current_alpha,theta_0,theta_1,num,block,uselerp):
     if "A" in mode: #favors modelA's structure with details from B
         # skip VAE model parameters to get better results
-        if "model" in key and key in theta_0:
+        if is_similarity_target_key(key) and key in theta_0:
             # Normalize the vectors before merging
             theta_0_norm = nn.functional.normalize(theta_0[key].to(torch.float32), p=2, dim=0)
             theta_1_norm = nn.functional.normalize(theta_1[key].to(torch.float32), p=2, dim=0)
@@ -758,7 +833,7 @@ def cosine(mode,key,sim,sims,current_alpha,theta_0,theta_1,num,block,uselerp):
 
     else: #favors modelB's structure with details from A
         # skip VAE model parameters to get better results
-        if "model" in key and key in theta_0:
+        if is_similarity_target_key(key) and key in theta_0:
             simab = sim(theta_0[key].to(torch.float32), theta_1[key].to(torch.float32))
             dot_product = torch.dot(theta_0[key].view(-1).to(torch.float32), theta_1[key].view(-1).to(torch.float32))
             magnitude_similarity = dot_product / (torch.norm(theta_0[key].to(torch.float32)) * torch.norm(theta_1[key].to(torch.float32)))
@@ -949,17 +1024,21 @@ def multithread_smoothadd(key_and_alpha, theta_0, theta_1, threads, tasks_per_th
 
 ################################################
 ##### Elementals
-def elementals(key,weight_index,weight_index_xl,deep,randomer,num,lucks,deepprint,current_alpha,extend):
+def elementals(key,weight_index,weight_index_xl,deep,randomer,num,lucks,deepprint,current_alpha,extend,blockids=None):
+    active_blockids = blockids if blockids is not None else (BLOCKIDXLLL if extend else BLOCKID)
+    active_index = weight_index_xl if (extend or blockids is not None) else weight_index
+    if active_index < 0 or active_index >= len(active_blockids):
+        return current_alpha
     for d in deep:
         if d.count(":") != 2 :continue
         dbs,dws,dr = d.split(":")
-        dbs = blocker(dbs,BLOCKIDXLLL if extend else BLOCKID)
+        dbs = blocker(dbs,active_blockids)
         dbs,dws = dbs.split(" "), dws.split(" ")
         dbn,dbs = (True,dbs[1:]) if dbs[0] == "NOT" else (False,dbs)
         dwn,dws = (True,dws[1:]) if dws[0] == "NOT" else (False,dws)
         flag = dbn
         for db in dbs:
-            if db == (BLOCKIDXLLL[weight_index_xl] if extend else BLOCKID[weight_index]):
+            if db == active_blockids[active_index]:
                 flag = not dbn
         if flag or dbs == [""]:flag = dwn
         else:continue
@@ -1456,7 +1535,24 @@ def blocker(blocks,blockids):
     return output
 
 
-def blockfromkey(key,isxl,isflux=False):
+def blockfromkey(key,isxl,isflux=False,isanima=False):
+    if isanima:
+        if key.startswith(("net.x_embedder.", "net.t_embedder.", "net.t_embedding_norm.")):
+            return "IN", "IN"
+        m = re.search(r"^net\.blocks\.(\d+)\.", key)
+        if m:
+            block = f"B{int(m.group(1)):02}"
+            return block, block
+        m = re.search(r"^net\.llm_adapter\.blocks\.(\d+)\.", key)
+        if m:
+            block = f"L{int(m.group(1)):02}"
+            return block, block
+        if key.startswith(("net.llm_adapter.embed.", "net.llm_adapter.norm.", "net.llm_adapter.out_proj.")):
+            return "LLM", "LLM"
+        if key.startswith("net.final_layer."):
+            return "OUT", "OUT"
+        return "Not Merge", "Not Merge"
+
     if not isxl and not isflux:
         re_inp = re.compile(r'\.input_blocks\.(\d+)\.')  # 12
         re_mid = re.compile(r'\.middle_block\.(\d+)\.')  # 1
@@ -1802,6 +1898,15 @@ def forge_loader(state_dict, additional_state_dicts):
     del state_dict
     
     repo_name = estimated_config.huggingface_repo
+    try:
+        import backend.args as backend_args
+        backend_args.dynamic_args.kontext = False
+        backend_args.dynamic_args.edit = False
+        backend_args.dynamic_args.nunchaku = getattr(estimated_config, "nunchaku", False)
+        backend_args.dynamic_args.klein = "klein" in repo_name
+        backend_args.dynamic_args.wan = "Wan" in repo_name
+    except Exception:
+        pass
 
     local_path = os.path.join(fld.dir_path, 'huggingface', repo_name)
     config: dict = fld.DiffusionPipeline.load_config(local_path)
@@ -1809,12 +1914,14 @@ def forge_loader(state_dict, additional_state_dicts):
     for component_name, v in config.items():
         if isinstance(v, list) and len(v) == 2:
             lib_name, cls_name = v
-            component_sd = state_dicts.get(component_name, None)
+            component_sd = state_dicts.pop(component_name, None)
             component = fld.load_huggingface_component(estimated_config, component_name, lib_name, cls_name, local_path, component_sd)
             if component_sd is not None:
-                del state_dicts[component_name]
+                del component_sd
             if component is not None:
                 huggingface_components[component_name] = component
+
+    del state_dicts
 
     for M in fld.possible_models:
         if any(isinstance(estimated_config, x) for x in M.matched_guesses):
@@ -1833,6 +1940,9 @@ def split_state_dict(sd, additional_state_dicts: list = None):
             sd = fld.replace_state_dict(sd, asd, guess)
 
     guess.clip_target = guess.clip_target(sd)
+    guess.model_type = guess.model_type(sd)
+    guess.ztsnr = "ztsnr" in sd
+    sd = guess.process_vae_state_dict(sd)
 
     state_dict = {
         guess.unet_target: fld.try_filter_state_dict(sd, guess.unet_key_prefix),
@@ -1845,6 +1955,9 @@ def split_state_dict(sd, additional_state_dicts: list = None):
         state_dict[v] = fld.try_filter_state_dict(sd, [k + '.'])
 
     state_dict['ignore'] = sd
+    if "Anima" in guess.huggingface_repo and "transformer" in state_dict and "text_encoder" in state_dict:
+        fld.process_anima(state_dict["transformer"], state_dict["text_encoder"])
+
     print_dict = {k: len(v) for k, v in state_dict.items()}
     print(f'StateDict Keys: {print_dict}')
 

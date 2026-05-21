@@ -1212,6 +1212,8 @@ BLOCKIDS = [BLOCKID,BLOCKIDXL,BLOCKIDXLL,BLOCKIDXLLL]
 def modeltype(sd):
     if "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in sd.keys():
         return "XL"
+    elif any(key.startswith("net.blocks.") for key in sd.keys()) and any(key.startswith("net.llm_adapter.") for key in sd.keys()):
+        return "anima"
     elif any("double"in x for x in sd.keys()):
         if any("nf4"in x for x in sd.keys()):return "flux.nf4"
         if any("fp4"in x for x in sd.keys()):return "flux.fp4"
@@ -1231,9 +1233,9 @@ def loadkeys(model_a, lora):
     if lora:
         for i, key in enumerate(sd.keys()):
             keys.append([i,"LoRA",key,sd[key].shape])
-    else:    
+    else:
         for i, key in enumerate(sd.keys()):
-            keys.append([i,blockfromkey(key,"XL" in mtype,"flux" in mtype),key,sd[key].shape])
+            keys.append([i,blockfromkey(key,"XL" in mtype,"flux" in mtype,"anima" in mtype),key,sd[key].shape])
 
     return keys,keys
 

@@ -1,5 +1,5 @@
 import launch
-import importlib
+import importlib.metadata
 from packaging.version import Version
 from packaging.requirements import Requirement
 
@@ -34,7 +34,7 @@ def is_installed(pip_package):
         return False
     
 requirements = [
-"diffusers==0.31.0",
+"diffusers>=0.37.1",
 "scikit-learn",
 "accelerate"
 ]
