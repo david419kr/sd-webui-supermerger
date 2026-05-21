@@ -234,7 +234,9 @@ def fake_checkpoint_info(checkpoint_info,metadata={},currentmodel=""):
 
     checkpoint_info.name = checkpoint_info.name_for_extra + ".safetensors"
     checkpoint_info.model_name = checkpoint_info.name_for_extra.replace("/", "_").replace("\\", "_")
+    checkpoint_info.shorthash = sha256[0:10]
     checkpoint_info.title = f"{checkpoint_info.name} [{sha256[0:10]}]"
+    checkpoint_info.short_title = f"{checkpoint_info.name_for_extra} [{sha256[0:10]}]"
     checkpoint_info.metadata = metadata
 
     # for sd-webui  v1.5.x
@@ -1839,8 +1841,25 @@ if forge or neo:
 
 @torch.inference_mode()
 def load_forge_model(state_dict,checkpoint_info = None):
-    current_hash = str(fsd.model_data.forge_loading_parameters)
-    print('Loading Model: ' + str(fsd.model_data.forge_loading_parameters))
+    loading_parameters = dict(getattr(fsd.model_data, "forge_loading_parameters", {}) or {})
+    checkpoint_info = loading_parameters.get('checkpoint_info', checkpoint_info)
+
+    if checkpoint_info is None:
+        raise ValueError('You do not have any model! Please download at least one model in [models/Stable-diffusion].')
+
+    if 'additional_modules' not in loading_parameters:
+        loading_parameters['additional_modules'] = shared.opts.forge_additional_modules
+
+    if 'unet_storage_dtype' not in loading_parameters:
+        try:
+            from modules_forge.main_entry import forge_unet_storage_dtype_options
+            loading_parameters['unet_storage_dtype'] = forge_unet_storage_dtype_options.get(shared.opts.forge_unet_storage_dtype, (None, False))[0]
+        except Exception:
+            loading_parameters['unet_storage_dtype'] = None
+
+    loading_parameters['checkpoint_info'] = checkpoint_info
+    current_hash = str(loading_parameters)
+    print('Loading Model: ' + str(loading_parameters))
 
     timer = Timer()
 
@@ -1852,30 +1871,28 @@ def load_forge_model(state_dict,checkpoint_info = None):
 
     timer.record("unload existing model")
 
-    checkpoint_info = fsd.model_data.forge_loading_parameters.get('checkpoint_info', checkpoint_info)
- 
-    if checkpoint_info is None:
-        raise ValueError('You do not have any model! Please download at least one model in [models/Stable-diffusion].')
-
-    additional_state_dicts = fsd.model_data.forge_loading_parameters.get('additional_modules', [])
+    additional_state_dicts = loading_parameters.get('additional_modules', [])
     timer.record("cache state dict")
 
-    fsd.dynamic_args['forge_unet_storage_dtype'] = fsd.model_data.forge_loading_parameters.get('unet_storage_dtype', None)
+    fsd.dynamic_args['forge_unet_storage_dtype'] = loading_parameters.get('unet_storage_dtype', None)
     fsd.dynamic_args['embedding_dir'] = fsd.cmd_opts.embeddings_dir
     fsd.dynamic_args['emphasis_name'] = opts.emphasis
-    sd_model = forge_loader(state_dict, additional_state_dicts)
+    sd_model = forge_loader(state_dict, additional_state_dicts, checkpoint_info.filename)
     timer.record("forge model load")
 
     sd_model.extra_generation_params = {}
     sd_model.comments = []
     sd_model.sd_checkpoint_info = checkpoint_info
     sd_model.filename = checkpoint_info.filename
-    sd_model.sd_model_hash = checkpoint_info.calculate_shorthash()
+    sd_model.sd_model_hash = checkpoint_info.shorthash if getattr(checkpoint_info, "isfake", False) else checkpoint_info.calculate_shorthash()
     timer.record("calculate hash")
 
     shared.opts.data["sd_checkpoint_hash"] = checkpoint_info.sha256
 
     fsd.model_data.set_sd_model(sd_model)
+
+    if hasattr(sd_model, "forge_objects") and hasattr(sd_model.forge_objects, "vae"):
+        processing.opt_f = sd_model.forge_objects.vae.upscale_ratio if isinstance(sd_model.forge_objects.vae.upscale_ratio, int) else 8
 
     fsd.script_callbacks.model_loaded_callback(sd_model)
 
@@ -1885,34 +1902,41 @@ def load_forge_model(state_dict,checkpoint_info = None):
 
     fsd.model_data.forge_hash = current_hash
 
-    fsd.model_data.forge_loading_parameters = dict(
-        checkpoint_info=checkpoint_info,
-        additional_modules=shared.opts.forge_additional_modules,
-        unet_storage_dtype=fsd.dynamic_args['forge_unet_storage_dtype']
-    )
+    fsd.model_data.forge_loading_parameters = loading_parameters
 
 COMP_NAME_AND_PREFIX = {"transformer":PREFIX_M, "text_encoder": "clip_l" , "text_encoder2": "t5xxl", "vae": "vae."}
 
 @torch.inference_mode()
-def forge_loader(state_dict, additional_state_dicts):
+def forge_loader(state_dict, additional_state_dicts, checkpoint_filename=None):
 
-    state_dicts, estimated_config = split_state_dict(state_dict, additional_state_dicts)
+    try:
+        state_dicts, estimated_config = split_state_dict(state_dict, additional_state_dicts)
+    except AttributeError:
+        raise ValueError("Failed to recognize model...") from None
     state_dict = None
     del state_dict
-    
-    repo_name = estimated_config.huggingface_repo
-    try:
-        import backend.args as backend_args
-        backend_args.dynamic_args.kontext = False
-        backend_args.dynamic_args.edit = False
-        backend_args.dynamic_args.nunchaku = getattr(estimated_config, "nunchaku", False)
-        backend_args.dynamic_args.klein = "klein" in repo_name
-        backend_args.dynamic_args.wan = "Wan" in repo_name
-    except Exception:
-        pass
 
-    local_path = os.path.join(fld.dir_path, 'huggingface', repo_name)
-    config: dict = fld.DiffusionPipeline.load_config(local_path)
+    repo_name = estimated_config.huggingface_repo
+    model_ref = str(checkpoint_filename or "")
+
+    import backend.args as backend_args
+    backend_args.dynamic_args.kontext = "kontext" in model_ref.lower()
+    backend_args.dynamic_args.edit = "qwen" in model_ref.lower() and "edit" in model_ref.lower()
+    backend_args.dynamic_args.nunchaku = getattr(estimated_config, "nunchaku", False)
+    backend_args.dynamic_args.klein = "klein" in repo_name
+    backend_args.dynamic_args.wan = "Wan" in repo_name
+
+    if "xl" in repo_name and "rectified" in model_ref.lower():
+        estimated_config.sampling_settings["RF"] = True
+
+    if getattr(estimated_config, "nunchaku", False) and model_ref:
+        estimated_config.unet_config["filename"] = model_ref
+
+    from diffusers import DiffusionPipeline
+
+    hf_root = getattr(fld, "HF", os.path.join(os.path.dirname(fld.__file__), "huggingface"))
+    local_path = os.path.join(hf_root, repo_name)
+    config: dict = DiffusionPipeline.load_config(local_path)
     huggingface_components = {}
     for component_name, v in config.items():
         if isinstance(v, list) and len(v) == 2:
@@ -1926,21 +1950,59 @@ def forge_loader(state_dict, additional_state_dicts):
 
     del state_dicts
 
+    config_filename = os.path.splitext(model_ref)[0] + ".yaml" if model_ref else ""
+    yaml_pred_type = None
+
+    if config_filename and os.path.isfile(config_filename):
+        import yaml
+        with open(config_filename, "r") as stream:
+            yaml_config: dict[str, dict] = yaml.safe_load(stream)
+
+        params: dict[str, dict] = yaml_config.get("model", {}).get("params", {})
+        pred_type: str = params.get("parameterization", "") or params.get("denoiser_config", {}).get("params", {}).get("scaling_config", {}).get("target", "")
+
+        if pred_type == "v" or pred_type.endswith(".VScaling"):
+            yaml_pred_type = "v_prediction"
+
+    pred_types = {
+        "EPS": "epsilon",
+        "V_PREDICTION": "v_prediction",
+        "FLUX": "const",
+        "FLOW": "const",
+    }
+
+    scheduler = huggingface_components.get("scheduler", None)
+    if "prediction_type" in getattr(scheduler, "config", {}):
+        if yaml_pred_type:
+            scheduler.config.prediction_type = yaml_pred_type
+        elif estimated_config.model_type.name in pred_types:
+            scheduler.config.prediction_type = pred_types[estimated_config.model_type.name]
+
     for M in fld.possible_models:
-        if any(isinstance(estimated_config, x) for x in M.matched_guesses):
+        if any(type(estimated_config) is x for x in M.matched_guesses):
             return M(estimated_config=estimated_config, huggingface_components=huggingface_components)
 
-    print('Failed to recognize model type!')
-    return None
+    raise ValueError("Failed to recognize model...") from None
 
 def split_state_dict(sd, additional_state_dicts: list = None):
     sd = fld.preprocess_state_dict(sd)
     guess = huggingface_guess.guess(sd)
 
     if isinstance(additional_state_dicts, list):
-        for asd in additional_state_dicts:
-            asd = load_torch_file(asd)
-            sd = fld.replace_state_dict(sd, asd, guess)
+        for asd_path in additional_state_dicts:
+            try:
+                asd, asd_metadata = load_torch_file(asd_path, return_metadata=True)
+            except TypeError:
+                asd, asd_metadata = load_torch_file(asd_path), {}
+
+            if hasattr(fld, "convert_quantization"):
+                asd, _ = fld.convert_quantization(asd, asd_metadata)
+
+            try:
+                sd = fld.replace_state_dict(sd, asd, guess, asd_path)
+            except TypeError:
+                sd = fld.replace_state_dict(sd, asd, guess)
+            del asd
 
     guess.clip_target = guess.clip_target(sd)
     guess.model_type = guess.model_type(sd)
