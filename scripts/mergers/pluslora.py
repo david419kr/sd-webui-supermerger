@@ -90,8 +90,66 @@ def anima_is_checkpoint_state_dict(sd):
 def anima_lora_module_name(key):
     for suffix in ANIMA_LORA_SUFFIXES:
         if key.endswith(suffix):
-            return key[:-len(suffix)]
+            return anima_normalize_lora_module(key[:-len(suffix)])
     return None
+
+def anima_dotted_from_flat_body(body):
+    replacements = [
+        (r"^llm_adapter_blocks_(\d+)_", r"llm_adapter.blocks.\1."),
+        (r"^blocks_(\d+)_", r"blocks.\1."),
+        (r"^llm_adapter_(embed|norm|out_proj)", r"llm_adapter.\1"),
+        (r"^x_embedder_", r"x_embedder."),
+        (r"^t_embedder_", r"t_embedder."),
+        (r"^final_layer_", r"final_layer."),
+    ]
+    for pattern, replacement in replacements:
+        body = re.sub(pattern, replacement, body)
+
+    body = body.replace("adaln_modulation_cross_attn_", "adaln_modulation_cross_attn.")
+    body = body.replace("adaln_modulation_self_attn_", "adaln_modulation_self_attn.")
+    body = body.replace("adaln_modulation_mlp_", "adaln_modulation_mlp.")
+    body = body.replace("cross_attn_", "cross_attn.")
+    body = body.replace("self_attn_", "self_attn.")
+    body = body.replace("mlp_layer1", "mlp.layer1")
+    body = body.replace("mlp_layer2", "mlp.layer2")
+    body = re.sub(r"(?<=\.)mlp_(\d+)", r"mlp.\1", body)
+    body = re.sub(r"t_embedder\.(\d+)_linear_(\d+)", r"t_embedder.\1.linear_\2", body)
+    body = body.replace("x_embedder.proj_", "x_embedder.proj.")
+    body = body.replace("final_layer.adaln_modulation_", "final_layer.adaln_modulation.")
+
+    for name in ("output_proj", "out_proj", "q_proj", "k_proj", "v_proj", "o_proj"):
+        body = body.replace("_" + name, "." + name)
+    return body
+
+def anima_normalize_lora_module(module):
+    if module is None:
+        return None
+    if module.startswith("diffusion_model."):
+        return module
+    if module.startswith("text_encoders.qwen3_06b."):
+        return module
+    if module.startswith("diffusion_model_"):
+        return "diffusion_model." + anima_dotted_from_flat_body(module[len("diffusion_model_"):])
+    if module.startswith("lora_unet_"):
+        return "diffusion_model." + anima_dotted_from_flat_body(module[len("lora_unet_"):])
+    if module.startswith("text_encoders_qwen3_06b_"):
+        return "text_encoders.qwen3_06b." + anima_dotted_from_flat_body(module[len("text_encoders_qwen3_06b_"):])
+    return module
+
+def anima_normalize_lora_key(key):
+    for suffix in ANIMA_LORA_SUFFIXES:
+        if key.endswith(suffix):
+            module = anima_normalize_lora_module(key[:-len(suffix)])
+            return module + suffix
+    return key
+
+def normalize_anima_lora_state_dict(sd):
+    normalized = {}
+    for key, value in sd.items():
+        normalized_key = anima_normalize_lora_key(key)
+        if normalized_key not in normalized or normalized_key == key:
+            normalized[normalized_key] = value
+    return normalized
 
 def anima_is_lora_module(module):
     if module is None:
@@ -374,6 +432,7 @@ def merge_anima_lora_models(models, ratios, new_rank, save_precision, calc_preci
 
     for model in models:
         sd, _, _ = load_state_dict(model, calc_dtype, "cpu")
+        sd = normalize_anima_lora_state_dict(sd)
         if not anima_is_lora_state_dict(sd):
             raise ValueError(f"Non-Anima LoRA cannot be mixed with Anima LoRA: {model}")
         lora_sds.append(sd)
@@ -441,6 +500,7 @@ def pluslora_anima(theta_0, filenames, ratios, calc_precision, device):
 
     for filename, ratio in zip(filenames, ratios):
         lora_sd, _, _ = load_state_dict(filename, calc_dtype, "cpu")
+        lora_sd = normalize_anima_lora_state_dict(lora_sd)
         if not anima_is_lora_state_dict(lora_sd):
             raise ValueError(f"Non-Anima LoRA cannot be baked into an Anima checkpoint: {filename}")
         for module in tqdm(sorted(anima_lora_modules(lora_sd)), desc=f"Anima bake {os.path.basename(filename)}"):
@@ -1705,6 +1765,7 @@ def dimgetter(filename, device = "cpu"):
     ltype = None
 
     if anima_is_lora_state_dict(lora_sd):
+        lora_sd = normalize_anima_lora_state_dict(lora_sd)
         for key, value in lora_sd.items():
             if key.endswith(".lora_down.weight"):
                 dim = tensor_rank(value)
