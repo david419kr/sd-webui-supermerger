@@ -24,10 +24,17 @@ def prune_model(model, isxl=False):
             model.pop(k, None)
     return model
 
-ANIMA_KEY_PREFIXES = ("net.", "blocks.", "llm_adapter.", "x_embedder.", "t_embedder.", "t_embedding_norm", "final_layer.")
+ANIMA_KEY_PREFIXES = ("net.", "model.diffusion_model.", "diffusion_model.")
+ANIMA_BODY_PREFIXES = ("blocks.", "llm_adapter.", "x_embedder.", "t_embedder.", "t_embedding_norm", "final_layer.")
+
+def normalize_anima_checkpoint_key(key):
+    for prefix in ANIMA_KEY_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
 
 def is_anima_checkpoint_key(key):
-    return key.startswith(ANIMA_KEY_PREFIXES)
+    return normalize_anima_checkpoint_key(key).startswith(ANIMA_BODY_PREFIXES)
 
 def to_half(sd):
     for key in sd.keys():

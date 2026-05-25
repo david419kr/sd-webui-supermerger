@@ -102,6 +102,13 @@ EXCLUDE_CHOICES = ["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07
                                   "M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11",
                                   "Adjust","VAE"] + ANIMA_BLOCKID[1:]
 CHCKPOINT_DICT_SKIP_ON_MERGE = ["cond_stage_model.transformer.text_model.embeddings.position_ids"]
+ANIMA_CHECKPOINT_PREFIXES = ("net.", "model.diffusion_model.", "diffusion_model.")
+ANIMA_BODY_PREFIXES = ("blocks.", "llm_adapter.", "x_embedder.", "t_embedder.", "t_embedding_norm", "final_layer.")
+ANIMA_REQUIRED_KEYS = (
+    "blocks.0.mlp.layer1.weight",
+    "llm_adapter.blocks.0.cross_attn.q_proj.weight",
+    "x_embedder.proj.1.weight",
+)
 
 #type[0:aplha,1:beta,2:seed,3:mbw,4:model_A,5:model_B,6:model_C]
 #msettings=[0 weights_a,1 weights_b,2 model_a,3 model_b,4 model_c,5 base_alpha,6 base_beta,7 mode,8 useblocks,9 custom_name,10 save_sets,11 id_sets,12 wpresets]
@@ -113,13 +120,63 @@ NON4 = [None]*4
 
 informer = sd_models.get_closet_checkpoint_match
 
+def normalize_anima_checkpoint_key(key):
+    for prefix in ANIMA_CHECKPOINT_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):], prefix
+    return key, ""
+
+def is_anima_checkpoint_body_key(key):
+    return key.startswith(ANIMA_BODY_PREFIXES)
+
+def is_anima_checkpoint_key(key):
+    body, _ = normalize_anima_checkpoint_key(key)
+    return is_anima_checkpoint_body_key(body)
+
 def is_anima_state_dict(sd):
-    keys = sd.keys()
-    return (
-        any(key.startswith("net.blocks.") for key in keys)
-        and any(key.startswith("net.llm_adapter.") for key in keys)
-        and any(key.startswith("net.x_embedder.") for key in keys)
-    )
+    keyset = set()
+    for key in sd.keys():
+        body, _ = normalize_anima_checkpoint_key(key)
+        keyset.add(body)
+    return all(key in keyset for key in ANIMA_REQUIRED_KEYS)
+
+def anima_output_prefix_from_state_dict(sd):
+    for required_key in ANIMA_REQUIRED_KEYS:
+        for key in sd.keys():
+            body, prefix = normalize_anima_checkpoint_key(key)
+            if body == required_key:
+                return prefix
+
+    prefix_counts = collections.Counter()
+    for key in sd.keys():
+        body, prefix = normalize_anima_checkpoint_key(key)
+        if is_anima_checkpoint_body_key(body):
+            prefix_counts[prefix] += 1
+    return prefix_counts.most_common(1)[0][0] if prefix_counts else ""
+
+def normalize_anima_state_dict_keys(sd):
+    renames = []
+    for key in list(sd.keys()):
+        body, prefix = normalize_anima_checkpoint_key(key)
+        if prefix and is_anima_checkpoint_body_key(body):
+            renames.append((key, body))
+
+    for old_key, new_key in renames:
+        if old_key not in sd:
+            continue
+        if new_key in sd and new_key != old_key:
+            del sd[old_key]
+        else:
+            sd[new_key] = sd.pop(old_key)
+    return sd
+
+def restore_anima_state_dict_prefix(sd, prefix):
+    if not prefix:
+        return sd
+    for key in list(sd.keys()):
+        if is_anima_checkpoint_body_key(key):
+            sd[prefix + key] = sd.pop(key)
+    return sd
 
 def detect_model_family(sd):
     if is_anima_state_dict(sd):
@@ -137,7 +194,7 @@ def is_merge_source_key(key, family):
     if not is_merge_tensor_key(key):
         return False
     if family == "anima":
-        return key.startswith("net.")
+        return is_anima_checkpoint_key(key)
     if family == "flux":
         return True
     return "model" in key
@@ -160,7 +217,7 @@ def has_compatible_merge_shape(key, theta_0, theta_1, theta_2, family):
     return True
 
 def is_similarity_target_key(key):
-    return "model" in key or key.startswith("net.")
+    return "model" in key or key.startswith("net.") or is_anima_checkpoint_key(key)
 
 #msettings=[weights_a,weights_b,model_a,model_b,model_c,device,base_alpha,base_beta,mode,loranames,useblocks,custom_name,save_sets,id_sets,wpresets,deep]
 
@@ -397,6 +454,9 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
     isxl = model_family == "sdxl"
     isflux = model_family == "flux"
     isanima = model_family == "anima"
+    anima_output_prefix = ""
+    if isanima:
+        normalize_anima_state_dict_keys(theta_1)
 
     #adjust
     if fine.rstrip(",0") != "":
@@ -429,6 +489,8 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         family_c = detect_model_family(theta_2)
         if family_c != model_family:
             return f"ERROR: Model family mismatch: model B is {model_family}, model C is {family_c}",*NON4
+        if isanima:
+            normalize_anima_state_dict_keys(theta_2)
 
     if MODES[1] in mode: #Add
         if not(calcmode == "trainDifference" or calcmode == "extract"):
@@ -467,6 +529,9 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
     family_a = detect_model_family(theta_0)
     if family_a != model_family:
         return f"ERROR: Model family mismatch: model A is {family_a}, model B is {model_family}",*NON4
+    if isanima:
+        anima_output_prefix = anima_output_prefix_from_state_dict(theta_0)
+        normalize_anima_state_dict_keys(theta_0)
 
     print(f"Model precisions : {qdtypes}")
 
@@ -681,8 +746,8 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         except:
             pass
 
-    if isanima and merged_key_count == 0:
-        return "ERROR: Anima merge found 0 mergeable net.* tensors. Nothing was saved.", *NON4
+    if merged_key_count == 0:
+        return f"ERROR: {model_family} merge found 0 mergeable tensors. Nothing was saved.", *NON4
     print(f"SuperMerger: merged {merged_key_count} tensors for {model_family}.")
 
     if calcmode == "smoothAdd MT":
@@ -727,6 +792,8 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
     caster(mergedmodel,False)
     if "Reset CLIP ids" in save_sets: resetclip(theta_0)
+    if isanima:
+        restore_anima_state_dict_prefix(theta_0, anima_output_prefix)
 
     weights_a_excluded = ",".join(str(x) for x in weights_a_excluded if x is not None)
     weights_b_excluded = ",".join(str(x) for x in weights_b_excluded if x is not None)
@@ -1542,19 +1609,20 @@ def blocker(blocks,blockids):
 
 def blockfromkey(key,isxl,isflux=False,isanima=False):
     if isanima:
-        if key.startswith(("net.x_embedder.", "net.t_embedder.", "net.t_embedding_norm.")):
+        body, _ = normalize_anima_checkpoint_key(key)
+        if body.startswith(("x_embedder.", "t_embedder.", "t_embedding_norm")):
             return "IN", "IN"
-        m = re.search(r"^net\.blocks\.(\d+)\.", key)
+        m = re.search(r"^blocks\.(\d+)\.", body)
         if m:
             block = f"B{int(m.group(1)):02}"
             return block, block
-        m = re.search(r"^net\.llm_adapter\.blocks\.(\d+)\.", key)
+        m = re.search(r"^llm_adapter\.blocks\.(\d+)\.", body)
         if m:
             block = f"L{int(m.group(1)):02}"
             return block, block
-        if key.startswith(("net.llm_adapter.embed.", "net.llm_adapter.norm.", "net.llm_adapter.out_proj.")):
+        if body.startswith(("llm_adapter.embed.", "llm_adapter.norm.", "llm_adapter.out_proj.")):
             return "LLM", "LLM"
-        if key.startswith("net.final_layer."):
+        if body.startswith("final_layer."):
             return "OUT", "OUT"
         return "Not Merge", "Not Merge"
 
