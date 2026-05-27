@@ -65,7 +65,11 @@ def to61s(ratioss):
 
 ANIMA_CHECKPOINT_PREFIXES = ("net.", "model.diffusion_model.", "diffusion_model.")
 ANIMA_LORA_PREFIXES = ("diffusion_model.", "text_encoders.qwen3_06b.")
-ANIMA_LORA_SUFFIXES = (".lora_down.weight", ".lora_up.weight", ".alpha", ".diff")
+ANIMA_LORA_SUFFIXES = (".lora_down.weight", ".lora_up.weight", ".lora_A.weight", ".lora_B.weight", ".alpha", ".diff")
+ANIMA_LORA_SUFFIX_ALIASES = {
+    ".lora_A.weight": ".lora_down.weight",
+    ".lora_B.weight": ".lora_up.weight",
+}
 
 def anima_normalize_checkpoint_key(key):
     for prefix in ANIMA_CHECKPOINT_PREFIXES:
@@ -140,7 +144,7 @@ def anima_normalize_lora_key(key):
     for suffix in ANIMA_LORA_SUFFIXES:
         if key.endswith(suffix):
             module = anima_normalize_lora_module(key[:-len(suffix)])
-            return module + suffix
+            return module + ANIMA_LORA_SUFFIX_ALIASES.get(suffix, suffix)
     return key
 
 def normalize_anima_lora_state_dict(sd):
